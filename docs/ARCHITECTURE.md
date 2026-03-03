@@ -1,5 +1,7 @@
 # Architecture
 
+For C4-style context/container/component views, see `docs/C4_ARCHITECTURE.md`.
+
 This system is built around separation of concerns:
 
 1. A deterministic router keeps simple turns cheap (`BASIC`).

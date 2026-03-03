@@ -1309,6 +1309,7 @@ langchain_agentic_chatbot_v2/
 │
 ├── docs/                          # Additional architecture and design docs
 │   ├── ARCHITECTURE.md            # System architecture, LangGraph flows, design decisions
+│   ├── C4_ARCHITECTURE.md         # C4 context/container/component diagrams (code-accurate)
 │   ├── PATTERNS.md                # Agentic patterns implemented + summary table
 │   ├── RAG_AGENT_DESIGN.md        # RAGAgent loop design, all 11 tools, output contract
 │   ├── TOOLS_AND_TOOL_CALLING.md  # Tool design principles, LangGraph loop, all tool schemas
