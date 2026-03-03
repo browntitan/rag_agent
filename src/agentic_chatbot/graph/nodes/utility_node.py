@@ -33,7 +33,7 @@ def make_utility_agent_node(
     from agentic_chatbot.tools import calculator, make_list_docs_tool, make_memory_tools  # noqa: PLC0415
     from agentic_chatbot.rag.skills import load_utility_agent_skills  # noqa: PLC0415
 
-    list_docs_tool = make_list_docs_tool(settings, stores)
+    list_docs_tool = make_list_docs_tool(settings, stores, session_proxy)
     memory_tools = make_memory_tools(stores, session_proxy)
     utility_tools = [calculator, list_docs_tool] + memory_tools
 

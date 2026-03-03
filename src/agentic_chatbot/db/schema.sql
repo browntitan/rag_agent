@@ -12,6 +12,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS documents (
     doc_id             TEXT PRIMARY KEY,
+    tenant_id          TEXT NOT NULL DEFAULT 'local-dev',
     title              TEXT NOT NULL,
     source_type        TEXT NOT NULL,           -- 'kb' | 'upload'
     source_path        TEXT,
@@ -21,6 +22,18 @@ CREATE TABLE IF NOT EXISTS documents (
     file_type          TEXT,                    -- 'pdf' | 'txt' | 'md' | 'docx'
     doc_structure_type TEXT DEFAULT 'general'   -- see chunk_type values below
 );
+
+-- Backfill / migrate existing databases created before tenant_id.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+UPDATE documents SET tenant_id = 'local-dev' WHERE tenant_id IS NULL OR tenant_id = '';
+ALTER TABLE documents ALTER COLUMN tenant_id SET DEFAULT 'local-dev';
+ALTER TABLE documents ALTER COLUMN tenant_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS documents_tenant_idx
+    ON documents(tenant_id);
+
+CREATE INDEX IF NOT EXISTS documents_tenant_source_idx
+    ON documents(tenant_id, source_type);
 
 -- ------------------------------------------------------------
 -- chunks: one row per document chunk
@@ -38,6 +51,7 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id       TEXT PRIMARY KEY,
     doc_id         TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+    tenant_id      TEXT NOT NULL DEFAULT 'local-dev',
     chunk_index    INTEGER NOT NULL,
     page_number    INTEGER,
     clause_number  TEXT,          -- e.g. '3', '3.2', '10.1.4'
@@ -48,9 +62,20 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_type     TEXT DEFAULT 'general'
 );
 
+-- Backfill / migrate existing databases created before tenant_id.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+UPDATE chunks c
+SET tenant_id = COALESCE((SELECT d.tenant_id FROM documents d WHERE d.doc_id = c.doc_id), 'local-dev')
+WHERE c.tenant_id IS NULL OR c.tenant_id = '';
+ALTER TABLE chunks ALTER COLUMN tenant_id SET DEFAULT 'local-dev';
+ALTER TABLE chunks ALTER COLUMN tenant_id SET NOT NULL;
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS chunks_doc_id_idx
     ON chunks(doc_id);
+
+CREATE INDEX IF NOT EXISTS chunks_tenant_doc_idx
+    ON chunks(tenant_id, doc_id);
 
 -- HNSW can be created on an empty table (unlike IVFFlat)
 -- m=16, ef_construction=64 are conservative defaults; tune for your dataset size
@@ -65,20 +90,32 @@ CREATE INDEX IF NOT EXISTS chunks_chunk_type_idx
     ON chunks(chunk_type);
 
 CREATE INDEX IF NOT EXISTS chunks_clause_number_idx
-    ON chunks(doc_id, clause_number)
+    ON chunks(tenant_id, doc_id, clause_number)
     WHERE clause_number IS NOT NULL;
 
 -- ------------------------------------------------------------
--- memory: persistent cross-turn key-value store per session
+-- memory: persistent cross-turn key-value store per tenant+session
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS memory (
     id          SERIAL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'local-dev',
     session_id  TEXT NOT NULL,
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     created_at  TIMESTAMPTZ DEFAULT now(),
-    updated_at  TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(session_id, key)
+    updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS memory_session_idx ON memory(session_id);
+-- Backfill / migrate existing databases created before tenant_id.
+ALTER TABLE memory ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+UPDATE memory SET tenant_id = 'local-dev' WHERE tenant_id IS NULL OR tenant_id = '';
+ALTER TABLE memory ALTER COLUMN tenant_id SET DEFAULT 'local-dev';
+ALTER TABLE memory ALTER COLUMN tenant_id SET NOT NULL;
+
+-- Keep old uniqueness for backward compatibility if it exists, and add the
+-- tenant-aware unique index required by ON CONFLICT (tenant_id, session_id, key).
+CREATE UNIQUE INDEX IF NOT EXISTS memory_tenant_session_key_uniq
+    ON memory(tenant_id, session_id, key);
+
+CREATE INDEX IF NOT EXISTS memory_tenant_session_idx
+    ON memory(tenant_id, session_id);

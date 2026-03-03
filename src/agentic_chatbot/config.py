@@ -102,6 +102,17 @@ class Settings:
     langfuse_secret_key: str | None
     langfuse_debug: bool
 
+    # --- Context defaults (CLI/demo compatibility) ---
+    default_tenant_id: str
+    default_user_id: str
+    default_conversation_id: str
+
+    # --- OpenAI-compatible gateway ---
+    gateway_model_id: str
+    jwt_secret_key: str | None
+    jwt_algorithm: str
+    rate_limit_per_minute: int
+
 
 def _getenv(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
@@ -230,6 +241,17 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     langfuse_secret_key = _getenv("LANGFUSE_SECRET_KEY")
     langfuse_debug = _as_bool("LANGFUSE_DEBUG", False)
 
+    # Context defaults
+    default_tenant_id = str(_getenv("DEFAULT_TENANT_ID", "local-dev"))
+    default_user_id = str(_getenv("DEFAULT_USER_ID", "local-cli"))
+    default_conversation_id = str(_getenv("DEFAULT_CONVERSATION_ID", "local-session"))
+
+    # Gateway auth/model config
+    gateway_model_id = str(_getenv("GATEWAY_MODEL_ID", "enterprise-agent"))
+    jwt_secret_key = _getenv("JWT_SECRET_KEY")
+    jwt_algorithm = str(_getenv("JWT_ALGORITHM", "HS256"))
+    rate_limit_per_minute = _as_int("RATE_LIMIT_PER_MINUTE", 120)
+
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
         raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
@@ -311,4 +333,11 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         langfuse_public_key=langfuse_public_key,
         langfuse_secret_key=langfuse_secret_key,
         langfuse_debug=langfuse_debug,
+        default_tenant_id=default_tenant_id,
+        default_user_id=default_user_id,
+        default_conversation_id=default_conversation_id,
+        gateway_model_id=gateway_model_id,
+        jwt_secret_key=jwt_secret_key,
+        jwt_algorithm=jwt_algorithm,
+        rate_limit_per_minute=rate_limit_per_minute,
     )

@@ -57,6 +57,7 @@ def make_all_rag_tools(
     """
     top_k_vector = max(1, int(getattr(settings, "rag_top_k_vector", 8)))
     top_k_keyword = max(1, int(getattr(settings, "rag_top_k_keyword", 8)))
+    tenant_id = getattr(session, "tenant_id", getattr(settings, "default_tenant_id", "local-dev"))
 
     # ------------------------------------------------------------------ #
     #  1. resolve_document                                                 #
@@ -77,10 +78,10 @@ def make_all_rag_tools(
             from rapidfuzz import process as fuzz_proc
         except ImportError:
             # Fallback to pg_trgm only if rapidfuzz is not installed
-            results = stores.doc_store.fuzzy_search_title(name_or_hint, limit=5)
+            results = stores.doc_store.fuzzy_search_title(name_or_hint, tenant_id=tenant_id, limit=5)
             return json.dumps({"candidates": results})
 
-        all_docs = stores.doc_store.get_all_titles()
+        all_docs = stores.doc_store.get_all_titles(tenant_id=tenant_id)
         if not all_docs:
             return json.dumps({"candidates": []})
 
@@ -107,7 +108,7 @@ def make_all_rag_tools(
             })
 
         # Also add any pg_trgm hits not already present
-        trgm_hits = stores.doc_store.fuzzy_search_title(name_or_hint, limit=5)
+        trgm_hits = stores.doc_store.fuzzy_search_title(name_or_hint, tenant_id=tenant_id, limit=5)
         for h in trgm_hits:
             if h["doc_id"] not in {c["doc_id"] for c in candidates}:
                 candidates.append({
@@ -140,6 +141,7 @@ def make_all_rag_tools(
                 query,
                 top_k=top_k_vector,
                 doc_id_filter=doc_id,
+                tenant_id=tenant_id,
             )
             results.extend(v_hits)
         if strategy in ("keyword", "hybrid"):
@@ -147,6 +149,7 @@ def make_all_rag_tools(
                 query,
                 top_k=top_k_keyword,
                 doc_id_filter=doc_id,
+                tenant_id=tenant_id,
             )
             results.extend(k_hits)
 
@@ -178,9 +181,9 @@ def make_all_rag_tools(
         """
         results = []
         if strategy in ("vector", "hybrid"):
-            results.extend(stores.chunk_store.vector_search(query, top_k=top_k_vector))
+            results.extend(stores.chunk_store.vector_search(query, top_k=top_k_vector, tenant_id=tenant_id))
         if strategy in ("keyword", "hybrid"):
-            results.extend(stores.chunk_store.keyword_search(query, top_k=top_k_keyword))
+            results.extend(stores.chunk_store.keyword_search(query, top_k=top_k_keyword, tenant_id=tenant_id))
 
         seen_ids: set = set()
         unique = []
@@ -210,7 +213,7 @@ def make_all_rag_tools(
         nums = [n.strip() for n in clause_numbers.split(",") if n.strip()]
         if not nums:
             return json.dumps({"error": "No clause numbers provided."})
-        chunks = stores.chunk_store.get_chunks_by_clause(doc_id, nums)
+        chunks = stores.chunk_store.get_chunks_by_clause(doc_id, nums, tenant_id=tenant_id)
         if not chunks:
             return json.dumps({
                 "message": f"No clauses found for numbers {nums} in doc {doc_id}. "
@@ -231,7 +234,7 @@ def make_all_rag_tools(
 
         Returns JSON list of {clause_number, section_title, chunk_type} ordered by position.
         """
-        outline = stores.chunk_store.get_structure_outline(doc_id)
+        outline = stores.chunk_store.get_structure_outline(doc_id, tenant_id=tenant_id)
         if not outline:
             return json.dumps({
                 "message": f"No structured outline found for doc {doc_id}. "
@@ -263,6 +266,7 @@ def make_all_rag_tools(
             doc_id,
             semantic_query=semantic_q,
             top_k=50,
+            tenant_id=tenant_id,
         )
         if not chunks:
             return json.dumps({
@@ -292,8 +296,8 @@ def make_all_rag_tools(
         Returns JSON with doc_1_clauses, doc_2_clauses, missing_in_1, missing_in_2.
         """
         nums = [n.strip() for n in clause_numbers.split(",") if n.strip()]
-        chunks_1 = stores.chunk_store.get_chunks_by_clause(doc_id_1, nums)
-        chunks_2 = stores.chunk_store.get_chunks_by_clause(doc_id_2, nums)
+        chunks_1 = stores.chunk_store.get_chunks_by_clause(doc_id_1, nums, tenant_id=tenant_id)
+        chunks_2 = stores.chunk_store.get_chunks_by_clause(doc_id_2, nums, tenant_id=tenant_id)
 
         nums_1 = {ch.clause_number for ch in chunks_1 if ch.clause_number}
         nums_2 = {ch.clause_number for ch in chunks_2 if ch.clause_number}
@@ -318,8 +322,8 @@ def make_all_rag_tools(
 
         Returns JSON: {shared, only_in_doc_1, only_in_doc_2, doc_1_outline, doc_2_outline}.
         """
-        outline_1 = stores.chunk_store.get_structure_outline(doc_id_1)
-        outline_2 = stores.chunk_store.get_structure_outline(doc_id_2)
+        outline_1 = stores.chunk_store.get_structure_outline(doc_id_1, tenant_id=tenant_id)
+        outline_2 = stores.chunk_store.get_structure_outline(doc_id_2, tenant_id=tenant_id)
 
         nums_1 = {row["clause_number"] for row in outline_1 if row.get("clause_number")}
         nums_2 = {row["clause_number"] for row in outline_2 if row.get("clause_number")}

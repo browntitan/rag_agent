@@ -15,6 +15,7 @@ class ChunkRecord:
     doc_id: str
     chunk_index: int
     content: str
+    tenant_id: str = "local-dev"
     chunk_type: str = "general"          # 'general'|'clause'|'section'|'requirement'|'header'
     page_number: Optional[int] = None
     clause_number: Optional[str] = None  # e.g. '3', '3.2', '10.1.4'
@@ -35,6 +36,7 @@ class ScoredChunk:
         metadata = {
             "chunk_id":      row.get("chunk_id", ""),
             "doc_id":        row.get("doc_id", ""),
+            "tenant_id":     row.get("tenant_id", "local-dev"),
             "chunk_index":   row.get("chunk_index", 0),
             "chunk_type":    row.get("chunk_type", "general"),
             "page":          row.get("page_number"),
@@ -60,7 +62,7 @@ class ChunkStore:
     # Write
     # ------------------------------------------------------------------
 
-    def add_chunks(self, chunks: List[ChunkRecord]) -> None:
+    def add_chunks(self, chunks: List[ChunkRecord], tenant_id: str) -> None:
         """Batch-insert chunks. Embeds any chunk that has no pre-computed embedding."""
         if not chunks:
             return
@@ -73,6 +75,7 @@ class ChunkStore:
             rows.append((
                 ch.chunk_id,
                 ch.doc_id,
+                tenant_id,
                 ch.chunk_index,
                 ch.page_number,
                 ch.clause_number,
@@ -92,10 +95,11 @@ class ChunkStore:
                     cur,
                     """
                     INSERT INTO chunks
-                        (chunk_id, doc_id, chunk_index, page_number,
+                        (chunk_id, doc_id, tenant_id, chunk_index, page_number,
                          clause_number, section_title, content, embedding, chunk_type)
                     VALUES %s
                     ON CONFLICT (chunk_id) DO UPDATE SET
+                        tenant_id     = EXCLUDED.tenant_id,
                         content       = EXCLUDED.content,
                         embedding     = EXCLUDED.embedding,
                         chunk_type    = EXCLUDED.chunk_type,
@@ -104,15 +108,15 @@ class ChunkStore:
                     """,
                     rows,
                     template=(
-                        "(%s, %s, %s, %s, %s, %s, %s, %s::vector, %s)"
+                        "(%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)"
                     ),
                 )
             conn.commit()
 
-    def delete_doc_chunks(self, doc_id: str) -> None:
+    def delete_doc_chunks(self, doc_id: str, tenant_id: str) -> None:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM chunks WHERE doc_id = %s AND tenant_id = %s", (doc_id, tenant_id))
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -124,6 +128,7 @@ class ChunkStore:
         query: str,
         top_k: int = 12,
         doc_id_filter: Optional[str] = None,
+        tenant_id: str = "local-dev",
     ) -> List[ScoredChunk]:
         """ANN vector search via HNSW cosine distance."""
         embedding = self._embed(query)
@@ -141,10 +146,12 @@ class ChunkStore:
                         FROM chunks c
                         JOIN documents d USING (doc_id)
                         WHERE c.doc_id = %s
+                          AND c.tenant_id = %s
+                          AND d.tenant_id = %s
                         ORDER BY c.embedding <=> %s::vector
                         LIMIT %s
                         """,
-                        (embedding, doc_id_filter, embedding, top_k),
+                        (embedding, doc_id_filter, tenant_id, tenant_id, embedding, top_k),
                     )
                 else:
                     cur.execute(
@@ -153,10 +160,11 @@ class ChunkStore:
                                1 - (c.embedding <=> %s::vector) AS score
                         FROM chunks c
                         JOIN documents d USING (doc_id)
+                        WHERE c.tenant_id = %s AND d.tenant_id = %s
                         ORDER BY c.embedding <=> %s::vector
                         LIMIT %s
                         """,
-                        (embedding, embedding, top_k),
+                        (embedding, tenant_id, tenant_id, embedding, top_k),
                     )
                 rows = cur.fetchall()
 
@@ -171,6 +179,7 @@ class ChunkStore:
         query: str,
         top_k: int = 12,
         doc_id_filter: Optional[str] = None,
+        tenant_id: str = "local-dev",
     ) -> List[ScoredChunk]:
         """PostgreSQL full-text search via tsvector/tsquery."""
         with get_conn() as conn:
@@ -184,10 +193,12 @@ class ChunkStore:
                         JOIN documents d USING (doc_id)
                         WHERE c.ts @@ plainto_tsquery('english', %s)
                           AND c.doc_id = %s
+                          AND c.tenant_id = %s
+                          AND d.tenant_id = %s
                         ORDER BY score DESC
                         LIMIT %s
                         """,
-                        (query, query, doc_id_filter, top_k),
+                        (query, query, doc_id_filter, tenant_id, tenant_id, top_k),
                     )
                 else:
                     cur.execute(
@@ -197,10 +208,12 @@ class ChunkStore:
                         FROM chunks c
                         JOIN documents d USING (doc_id)
                         WHERE c.ts @@ plainto_tsquery('english', %s)
+                          AND c.tenant_id = %s
+                          AND d.tenant_id = %s
                         ORDER BY score DESC
                         LIMIT %s
                         """,
-                        (query, query, top_k),
+                        (query, query, tenant_id, tenant_id, top_k),
                     )
                 rows = cur.fetchall()
 
@@ -214,6 +227,7 @@ class ChunkStore:
         self,
         doc_id: str,
         clause_numbers: List[str],
+        tenant_id: str,
     ) -> List[ChunkRecord]:
         """Retrieve chunks by exact clause_number match."""
         if not clause_numbers:
@@ -223,15 +237,15 @@ class ChunkStore:
                 cur.execute(
                     """
                     SELECT * FROM chunks
-                    WHERE doc_id = %s AND clause_number = ANY(%s)
+                    WHERE doc_id = %s AND tenant_id = %s AND clause_number = ANY(%s)
                     ORDER BY chunk_index
                     """,
-                    (doc_id, clause_numbers),
+                    (doc_id, tenant_id, clause_numbers),
                 )
                 rows = cur.fetchall()
         return [_row_to_chunk(dict(r)) for r in rows]
 
-    def get_structure_outline(self, doc_id: str) -> List[Dict[str, Any]]:
+    def get_structure_outline(self, doc_id: str, tenant_id: str) -> List[Dict[str, Any]]:
         """Return distinct clause/section structure of a document, ordered by position."""
         with get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -240,10 +254,10 @@ class ChunkStore:
                     SELECT DISTINCT ON (clause_number)
                            clause_number, section_title, chunk_type, chunk_index
                     FROM chunks
-                    WHERE doc_id = %s AND clause_number IS NOT NULL
+                    WHERE doc_id = %s AND tenant_id = %s AND clause_number IS NOT NULL
                     ORDER BY clause_number, chunk_index
                     """,
-                    (doc_id,),
+                    (doc_id, tenant_id),
                 )
                 rows = cur.fetchall()
         return [dict(r) for r in rows]
@@ -253,6 +267,7 @@ class ChunkStore:
         doc_id: str,
         semantic_query: Optional[str] = None,
         top_k: int = 30,
+        tenant_id: str = "local-dev",
     ) -> List[ChunkRecord]:
         """Return all chunks tagged chunk_type='requirement' for a document.
 
@@ -268,33 +283,33 @@ class ChunkStore:
                         """
                         SELECT *, 1 - (embedding <=> %s::vector) AS _vscore
                         FROM chunks
-                        WHERE doc_id = %s AND chunk_type = 'requirement'
+                        WHERE doc_id = %s AND tenant_id = %s AND chunk_type = 'requirement'
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                         """,
-                        (emb, doc_id, emb, top_k),
+                        (emb, doc_id, tenant_id, emb, top_k),
                     )
                 else:
                     cur.execute(
                         """
                         SELECT * FROM chunks
-                        WHERE doc_id = %s AND chunk_type = 'requirement'
+                        WHERE doc_id = %s AND tenant_id = %s AND chunk_type = 'requirement'
                         ORDER BY chunk_index
                         LIMIT %s
                         """,
-                        (doc_id, top_k),
+                        (doc_id, tenant_id, top_k),
                     )
                 rows = cur.fetchall()
         return [_row_to_chunk(dict(r)) for r in rows]
 
-    def chunk_count(self, doc_id: Optional[str] = None) -> int:
+    def chunk_count(self, doc_id: Optional[str] = None, tenant_id: str = "local-dev") -> int:
         """Return total number of chunks (optionally filtered by doc_id)."""
         with get_conn() as conn:
             with conn.cursor() as cur:
                 if doc_id:
-                    cur.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = %s", (doc_id,))
+                    cur.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = %s AND tenant_id = %s", (doc_id, tenant_id))
                 else:
-                    cur.execute("SELECT COUNT(*) FROM chunks")
+                    cur.execute("SELECT COUNT(*) FROM chunks WHERE tenant_id = %s", (tenant_id,))
                 row = cur.fetchone()
         return int(row[0]) if row else 0
 
@@ -303,6 +318,7 @@ def _row_to_chunk(row: Dict[str, Any]) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=row.get("chunk_id", ""),
         doc_id=row.get("doc_id", ""),
+        tenant_id=row.get("tenant_id") or "local-dev",
         chunk_index=row.get("chunk_index", 0),
         content=row.get("content", ""),
         chunk_type=row.get("chunk_type", "general"),

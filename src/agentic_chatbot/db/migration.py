@@ -29,10 +29,11 @@ def migrate_docstore_to_pg(docstore_path: pathlib.Path) -> int:
     inserted = 0
 
     for doc_id, meta in raw.items():
-        if store.document_exists(doc_id, meta.get("content_hash", "")):
+        if store.document_exists(doc_id, meta.get("content_hash", ""), tenant_id=tenant_id):
             continue
         record = DocumentRecord(
             doc_id=doc_id,
+            tenant_id=tenant_id,
             title=meta.get("title", ""),
             source_type=meta.get("source_type", "kb"),
             content_hash=meta.get("content_hash", ""),
@@ -105,6 +106,7 @@ def migrate_chroma_to_pg(
                 ChunkRecord(
                     chunk_id=str(meta.get("chunk_id", "")),
                     doc_id=str(meta.get("doc_id", "")),
+                    tenant_id=tenant_id,
                     chunk_index=int(meta.get("chunk_index", 0)),
                     content=text or "",
                     chunk_type=str(meta.get("chunk_type", "general")),
@@ -115,10 +117,12 @@ def migrate_chroma_to_pg(
                 )
             )
         if records:
-            chunk_store.add_chunks(records)
+            chunk_store.add_chunks(records, tenant_id=tenant_id)
             inserted += len(records)
 
         offset += batch_size
 
     print(f"  [migration] Migrated {inserted} chunks from Chroma.")
     return inserted
+    tenant_id = "local-dev"
+    tenant_id = "local-dev"

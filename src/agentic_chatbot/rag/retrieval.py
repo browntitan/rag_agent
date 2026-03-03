@@ -21,10 +21,16 @@ def vector_search(
     query: str,
     *,
     top_k: int,
+    tenant_id: str,
     doc_id_filter: Optional[str] = None,
 ) -> List[ScoredChunk]:
     """Vector similarity search via pgvector, with optional hard doc_id filter."""
-    return stores.chunk_store.vector_search(query, top_k=top_k, doc_id_filter=doc_id_filter)
+    return stores.chunk_store.vector_search(
+        query,
+        top_k=top_k,
+        doc_id_filter=doc_id_filter,
+        tenant_id=tenant_id,
+    )
 
 
 def keyword_search(
@@ -32,10 +38,16 @@ def keyword_search(
     query: str,
     *,
     top_k: int,
+    tenant_id: str,
     doc_id_filter: Optional[str] = None,
 ) -> List[ScoredChunk]:
     """Full-text search via PostgreSQL tsvector, with optional hard doc_id filter."""
-    return stores.chunk_store.keyword_search(query, top_k=top_k, doc_id_filter=doc_id_filter)
+    return stores.chunk_store.keyword_search(
+        query,
+        top_k=top_k,
+        doc_id_filter=doc_id_filter,
+        tenant_id=tenant_id,
+    )
 
 
 def merge_dedupe(chunks: Sequence[ScoredChunk]) -> List[ScoredChunk]:
@@ -52,6 +64,7 @@ def retrieve_candidates(
     stores: KnowledgeStores,
     query: str,
     *,
+    tenant_id: str,
     preferred_doc_ids: List[str],
     must_include_uploads: bool,
     top_k_vector: int,
@@ -68,8 +81,20 @@ def retrieve_candidates(
     # Determine effective DB-level filter
     effective_filter: Optional[str] = doc_id_filter
 
-    v = vector_search(stores, query, top_k=top_k_vector, doc_id_filter=effective_filter)
-    k = keyword_search(stores, query, top_k=top_k_keyword, doc_id_filter=effective_filter)
+    v = vector_search(
+        stores,
+        query,
+        top_k=top_k_vector,
+        tenant_id=tenant_id,
+        doc_id_filter=effective_filter,
+    )
+    k = keyword_search(
+        stores,
+        query,
+        top_k=top_k_keyword,
+        tenant_id=tenant_id,
+        doc_id_filter=effective_filter,
+    )
 
     # Apply soft preferred_doc_ids filter when no hard filter is active
     if not effective_filter and preferred_doc_ids:

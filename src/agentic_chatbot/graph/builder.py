@@ -69,6 +69,7 @@ def build_multi_agent_graph(
     # Build a session proxy for tool factories
     session_proxy = SessionProxy(
         session_id=session.session_id,
+        tenant_id=session.tenant_id,
         scratchpad=dict(session.scratchpad),
         uploaded_doc_ids=list(session.uploaded_doc_ids),
     )
@@ -187,6 +188,7 @@ def build_initial_state(
     """
     return {
         "messages": list(session.messages) + [HumanMessage(content=user_text)],
+        "tenant_id": session.tenant_id,
         "session_id": session.session_id,
         "uploaded_doc_ids": list(session.uploaded_doc_ids),
         "scratchpad": dict(session.scratchpad),

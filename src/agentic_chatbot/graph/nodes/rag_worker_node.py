@@ -46,6 +46,7 @@ def make_rag_worker_node(
         # Each worker gets its own isolated scratchpad
         session_proxy = SessionProxy(
             session_id=state.get("session_id", ""),
+            tenant_id=state.get("tenant_id", "local-dev"),
             scratchpad={},
             uploaded_doc_ids=list(state.get("uploaded_doc_ids", [])),
         )

@@ -8,7 +8,8 @@ This system is built around separation of concerns:
 2. A multi-agent supervisor graph handles complex turns (`AGENT`).
 3. Specialist agents isolate responsibilities (RAG, utility, parallel RAG workers).
 4. PostgreSQL (with `pgvector` + `pg_trgm`) is the single backend.
-5. A legacy single-agent fallback is preserved for compatibility.
+5. A FastAPI OpenAI-compatible gateway (`/v1`) can expose the runtime to external chat UIs.
+6. A legacy single-agent fallback is preserved for compatibility.
 
 ---
 
@@ -37,6 +38,11 @@ AGENT fallback (capability/config issue only)
 Uploads
   -> ingest_paths(...)
   -> direct run_rag_agent(...) summary kickoff
+
+OpenAI-compatible HTTP gateway (optional)
+  -> FastAPI /v1/chat/completions
+  -> maps OpenAI messages to ChatSession history + user turn
+  -> process_turn(...)
 ```
 
 ---

@@ -9,7 +9,7 @@ from agentic_chatbot.config import Settings
 from agentic_chatbot.rag.stores import KnowledgeStores
 
 
-def make_list_docs_tool(settings: Settings, stores: KnowledgeStores) -> Callable:
+def make_list_docs_tool(settings: Settings, stores: KnowledgeStores, session: object) -> Callable:
     @tool
     def list_indexed_docs(source_type: str = "") -> str:
         """List documents currently indexed in the knowledge base.
@@ -22,7 +22,8 @@ def make_list_docs_tool(settings: Settings, stores: KnowledgeStores) -> Callable
           JSON list of docs with doc_id, title, source_type, num_chunks,
           file_type, doc_structure_type.
         """
-        records = stores.doc_store.list_documents(source_type=source_type)
+        tenant_id = getattr(session, "tenant_id", settings.default_tenant_id)
+        records = stores.doc_store.list_documents(source_type=source_type, tenant_id=tenant_id)
         docs = [
             {
                 "doc_id": r.doc_id,

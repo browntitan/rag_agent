@@ -2,7 +2,8 @@
 
 Tools created via ``make_all_rag_tools(stores, session)`` and
 ``make_memory_tools(stores, session)`` close over a session object.
-They only access ``session.scratchpad``, ``session.session_id``, and
+They only access ``session.scratchpad``, ``session.session_id``,
+``session.tenant_id``, and
 ``session.uploaded_doc_ids``.  This proxy provides those same attributes
 so the existing tool factories work without modification (duck typing).
 """
@@ -17,6 +18,7 @@ class SessionProxy:
     """Bridges AgentState fields to the interface tools expect."""
 
     session_id: str = ""
+    tenant_id: str = "local-dev"
     scratchpad: Dict[str, str] = field(default_factory=dict)
     uploaded_doc_ids: List[str] = field(default_factory=list)
     # messages is unused by tools but satisfies any hasattr checks

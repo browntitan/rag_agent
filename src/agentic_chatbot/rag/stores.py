@@ -14,9 +14,10 @@ def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def make_doc_id(source_type: str, title: str, content_hash: str) -> str:
-    """Stable document identifier: TYPE_<10-char sha1 of title+hash>."""
-    return f"{source_type.upper()}_{_sha1(title + ':' + content_hash)[:10]}"
+def make_doc_id(source_type: str, title: str, content_hash: str, tenant_id: str) -> str:
+    """Stable document identifier scoped by tenant."""
+    key = f"{tenant_id}:{title}:{content_hash}"
+    return f"{source_type.upper()}_{_sha1(key)[:10]}"
 
 
 @dataclass

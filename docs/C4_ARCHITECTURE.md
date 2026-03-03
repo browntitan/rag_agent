@@ -13,8 +13,9 @@ Verification baseline:
 
 ## Scope and assumptions
 
-- The primary runtime interface is CLI (`python run.py ...`).
-- There is no HTTP API server in the current codebase.
+- Runtime interfaces are:
+  - CLI (`python run.py ...`)
+  - FastAPI gateway (`python run.py serve-api`) exposing OpenAI-compatible `/v1` endpoints.
 - The AGENT path is supervisor-graph first, with a legacy single-agent fallback only for capability/config issues.
 - Langfuse is optional and enabled only when keys are configured.
 
@@ -28,6 +29,7 @@ flowchart LR
 
     subgraph system["Agentic RAG Chatbot v2 (this repo)"]
         app["Agentic Runtime (Python)"]
+        gateway["OpenAI-Compatible Gateway (FastAPI)"]
     end
 
     files["Local Filesystem\n(data/kb, data/uploads, data/skills, data/prompts)"]
@@ -36,6 +38,8 @@ flowchart LR
     langfuse["Langfuse (optional)"]
 
     user -->|"run.py ask/chat/demo/migrate/init-kb"| app
+    user -->|"HTTP /v1/models, /v1/chat/completions"| gateway
+    gateway --> app
     app -->|"read docs, prompts, skills"| files
     app -->|"store/retrieve documents, chunks, memory"| db
     app -->|"chat, judge, embeddings calls"| llm

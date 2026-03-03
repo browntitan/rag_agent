@@ -89,6 +89,7 @@ def make_rag_agent_node(
 
         session_proxy = SessionProxy(
             session_id=state.get("session_id", ""),
+            tenant_id=state.get("tenant_id", "local-dev"),
             scratchpad=dict(state.get("scratchpad", {})),
             uploaded_doc_ids=list(state.get("uploaded_doc_ids", [])),
         )

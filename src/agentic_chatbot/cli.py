@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agentic_chatbot.config import load_settings
+from agentic_chatbot.context import build_local_context
 from agentic_chatbot.providers import build_providers
 from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
@@ -48,6 +49,12 @@ def _make_app(dotenv: Optional[str] = None) -> ChatbotApp:
     return ChatbotApp.create(settings, providers)
 
 
+def _make_local_session(dotenv: Optional[str] = None, conversation_id: Optional[str] = None) -> ChatSession:
+    settings = load_settings(dotenv)
+    ctx = build_local_context(settings, conversation_id=conversation_id)
+    return ChatSession.from_context(ctx)
+
+
 def _load_demo_scenarios(data_dir: Path) -> Dict[str, List[str]]:
     path = data_dir / "demo" / "demo_scenarios.json"
     if not path.exists():
@@ -80,7 +87,7 @@ def ask(
     """Run a single-turn query."""
 
     bot = _make_app(dotenv)
-    session = ChatSession()
+    session = _make_local_session(dotenv)
 
     response = bot.process_turn(session, user_text=question, upload_paths=upload, force_agent=force_agent)
 
@@ -95,7 +102,7 @@ def chat(
     """Start an interactive chat session. Use /upload PATH to ingest docs mid-chat."""
 
     bot = _make_app(dotenv)
-    session = ChatSession()
+    session = _make_local_session(dotenv)
 
     if upload:
         console.print("[bold]Ingesting uploads...[/bold]")
@@ -138,7 +145,8 @@ def init_kb(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
     bot = _make_app(dotenv)
     # `ensure_kb_indexed` already runs on init; this command just confirms.
     console.print("KB indexing ensured. Indexed documents:")
-    records = bot.ctx.stores.doc_store.list_documents()
+    tenant_id = bot.ctx.settings.default_tenant_id
+    records = bot.ctx.stores.doc_store.list_documents(tenant_id=tenant_id)
     docs = [
         {
             "doc_id": r.doc_id,
@@ -219,7 +227,7 @@ def demo(
 
     providers = build_providers(settings)
     bot = ChatbotApp.create(settings, providers)
-    session = ChatSession()
+    session = _make_local_session(dotenv)
 
     if upload:
         console.print("[bold]Ingesting demo uploads...[/bold]")
@@ -244,3 +252,15 @@ def demo(
                 console.print(Panel(f"Demo prompt failed: {e}", title="Error"))
                 if not continue_on_error:
                     raise typer.Exit(code=1)
+
+
+@app.command("serve-api")
+def serve_api(
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+):
+    """Run the OpenAI-compatible FastAPI gateway."""
+    import uvicorn
+
+    uvicorn.run("agentic_chatbot.api.main:app", host=host, port=port, reload=reload, factory=False)

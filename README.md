@@ -264,6 +264,54 @@ Restart app container after key changes:
 docker compose restart app
 ```
 
+### 4.4 OpenAI-Compatible Agent Gateway
+
+Run the gateway locally:
+
+```bash
+python run.py serve-api --host 0.0.0.0 --port 8000
+```
+
+Endpoint summary:
+
+- `GET http://localhost:8000/v1/models`
+- `POST http://localhost:8000/v1/chat/completions`
+- `POST http://localhost:8000/v1/ingest/documents`
+
+The gateway is designed so OpenWebUI and AI SDK can target it as an OpenAI-compatible backend by changing base URL and credentials.
+
+OpenWebUI wiring:
+
+1. Provider type: OpenAI-compatible.
+2. Base URL: `http://<gateway-host>:8000/v1`.
+3. Model: `enterprise-agent` (or `GATEWAY_MODEL_ID`).
+4. Ensure your deployment forwards `Authorization` (Bearer JWT) and optionally `X-Conversation-ID`.
+
+AI SDK wiring:
+
+1. Point your provider/base URL to `http://<gateway-host>:8000/v1`.
+2. Use model `enterprise-agent`.
+3. Pass headers:
+   - `Authorization: Bearer <jwt>`
+   - `X-Conversation-ID: <stable-chat-id>` (recommended).
+
+Example request:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer <jwt>" \
+  -H "Content-Type: application/json" \
+  -H "X-Conversation-ID: demo-chat-001" \
+  -d '{
+    "model": "enterprise-agent",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Compare api_auth.md and api_examples.md with citations."}
+    ],
+    "stream": false
+  }'
+```
+
 ---
 
 ## 5. Installation
@@ -311,6 +359,7 @@ Commands:
   migrate        Apply the database schema (idempotent).
   reset-indexes  Truncate all indexed data from PostgreSQL.
   demo           Run curated multi-turn demo scenarios.
+  serve-api      Run the OpenAI-compatible FastAPI gateway.
 ```
 
 ---
@@ -604,6 +653,22 @@ python run.py demo --list-scenarios
 python run.py demo --scenario utility_and_memory
 python run.py demo --scenario all --max-turns 2
 ```
+
+---
+
+### `serve-api` — Run OpenAI-Compatible Gateway
+
+```bash
+python run.py serve-api [--host 0.0.0.0] [--port 8000] [--reload]
+```
+
+This starts a FastAPI server exposing:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/ingest/documents`
+
+JWT auth is required for `/v1/*` endpoints (`Authorization: Bearer <token>`).
 
 ---
 
@@ -1240,8 +1305,16 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `DB_WAIT_TIMEOUT_SECONDS` | `90` | No | DB wait timeout in app entrypoint |
 | `APP_AUTO_MIGRATE` | `true` | No | Auto-run `python run.py migrate` in app container entrypoint |
 | `APP_AUTO_INIT_KB` | `false` | No | Auto-run `python run.py init-kb` in app container entrypoint |
+| `APP_API_PORT` | `8000` | No | Host port mapped to gateway service in Docker Compose |
 | `OLLAMA_BASE_URL_DOCKER` | `http://ollama:11434` | No | Internal Ollama URL injected into app service in compose |
 | `LANGFUSE_HOST_DOCKER` | `http://langfuse-web:3000` | No | Internal Langfuse URL injected into app service in compose |
+| `DEFAULT_TENANT_ID` | `local-dev` | No | Default tenant for CLI/demo/local runs |
+| `DEFAULT_USER_ID` | `local-cli` | No | Default user for CLI/demo/local runs |
+| `DEFAULT_CONVERSATION_ID` | `local-session` | No | Default conversation scope for CLI/demo/local runs |
+| `GATEWAY_MODEL_ID` | `enterprise-agent` | No | Public model ID exposed by `/v1/models` |
+| `JWT_SECRET_KEY` | — | If API auth enabled | HMAC secret used to verify Bearer JWTs in gateway |
+| `JWT_ALGORITHM` | `HS256` | No | JWT algorithm used by gateway verifier |
+| `RATE_LIMIT_PER_MINUTE` | `120` | No | In-memory gateway limit per tenant+user key |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
 | `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
 | `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
@@ -1316,13 +1389,18 @@ langchain_agentic_chatbot_v2/
 │   ├── RAG_TOOL_CONTRACT.md       # Full rag_agent_tool output schema specification
 │   ├── PROVIDERS.md               # Ollama vs Azure OpenAI provider configuration
 │   ├── OBSERVABILITY_LANGFUSE.md  # Langfuse tracing setup and trace structure
+│   ├── OPENAI_GATEWAY.md           # OpenAI-compatible /v1 gateway + OpenWebUI/AI SDK wiring
 │   ├── ROUTER_RUBRIC.md           # Router decision rules and confidence scoring
 │   ├── KB_DEMO_PACKS.md           # Built-in knowledge base document descriptions
 │   └── COMPOSITION.md             # How the system components compose together
 │
 └── src/agentic_chatbot/
-    ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes)
+    ├── api/
+    │   ├── __init__.py            # FastAPI gateway package export
+    │   └── main.py                # OpenAI-compatible /v1 endpoints + JWT auth
+    ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes, serve-api)
     ├── config.py                  # Settings dataclass + load_settings() from env
+    ├── context.py                 # RequestContext + local/JWT context resolvers
     ├── prompting.py               # Prompt template loading + token replacement
     │
     ├── agents/

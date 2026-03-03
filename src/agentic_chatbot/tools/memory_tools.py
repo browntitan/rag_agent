@@ -25,7 +25,7 @@ def make_memory_tools(stores: Any, session: Any) -> List[Any]:
 
         Returns a confirmation string.
         """
-        memory_store.save(session.session_id, key, value)
+        memory_store.save(getattr(session, "tenant_id", "local-dev"), session.session_id, key, value)
         return f"Saved memory: {key!r} = {value!r}"
 
     @tool
@@ -37,7 +37,7 @@ def make_memory_tools(stores: Any, session: Any) -> List[Any]:
 
         Returns the stored value, or a message indicating it was not found.
         """
-        value = memory_store.get(session.session_id, key)
+        value = memory_store.get(getattr(session, "tenant_id", "local-dev"), session.session_id, key)
         if value is None:
             return f"No memory found for key {key!r}."
         return value
@@ -48,7 +48,7 @@ def make_memory_tools(stores: Any, session: Any) -> List[Any]:
 
         Returns a comma-separated list of keys, or a message if none exist.
         """
-        keys = memory_store.list_keys(session.session_id)
+        keys = memory_store.list_keys(getattr(session, "tenant_id", "local-dev"), session.session_id)
         if not keys:
             return "No memory keys saved for this session."
         return ", ".join(keys)

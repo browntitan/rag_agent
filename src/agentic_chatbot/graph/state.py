@@ -49,6 +49,7 @@ class AgentState(MessagesState):
     """
 
     # Identity / session
+    tenant_id: str = "local-dev"
     session_id: str = ""
     uploaded_doc_ids: List[str] = []
 

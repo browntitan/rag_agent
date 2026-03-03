@@ -171,6 +171,7 @@ def ingest_paths(
     paths: Iterable[Path],
     *,
     source_type: str,
+    tenant_id: str,
 ) -> List[str]:
     """Ingest files into PostgreSQL (chunks + documents tables).
 
@@ -192,10 +193,15 @@ def ingest_paths(
 
         file_hash = _file_hash(p)
         title = p.name
-        doc_id = make_doc_id(source_type=source_type, title=title, content_hash=file_hash)
+        doc_id = make_doc_id(
+            source_type=source_type,
+            title=title,
+            content_hash=file_hash,
+            tenant_id=tenant_id,
+        )
 
         # Skip if already ingested with identical content
-        if stores.doc_store.document_exists(doc_id, file_hash):
+        if stores.doc_store.document_exists(doc_id, file_hash, tenant_id=tenant_id):
             continue
 
         raw_docs = _load_documents(p, settings)
@@ -220,12 +226,13 @@ def ingest_paths(
         chunk_records = _build_chunk_records(chunks, doc_id)
 
         # Persist chunks (embeddings computed inside ChunkStore.add_chunks)
-        stores.chunk_store.add_chunks(chunk_records)
+        stores.chunk_store.add_chunks(chunk_records, tenant_id=tenant_id)
 
         # Persist document record
         stores.doc_store.upsert_document(
             DocumentRecord(
                 doc_id=doc_id,
+                tenant_id=tenant_id,
                 title=title,
                 source_type=source_type,
                 content_hash=file_hash,
@@ -242,15 +249,15 @@ def ingest_paths(
     return ingested_doc_ids
 
 
-def ensure_kb_indexed(settings: Settings, stores: KnowledgeStores) -> None:
+def ensure_kb_indexed(settings: Settings, stores: KnowledgeStores, tenant_id: str) -> None:
     """Index the built-in KB documents if the documents table is empty for source_type='kb'."""
     if settings.object_store_backend != "local":
         raise NotImplementedError(
             f"OBJECT_STORE_BACKEND={settings.object_store_backend!r} is not implemented for KB indexing yet. "
             "Set OBJECT_STORE_BACKEND=local for now."
         )
-    kb_docs = stores.doc_store.list_documents(source_type="kb")
+    kb_docs = stores.doc_store.list_documents(source_type="kb", tenant_id=tenant_id)
     if kb_docs:
         return
     kb_paths = sorted(Path(settings.kb_dir).glob("*"))
-    ingest_paths(settings, stores, kb_paths, source_type="kb")
+    ingest_paths(settings, stores, kb_paths, source_type="kb", tenant_id=tenant_id)

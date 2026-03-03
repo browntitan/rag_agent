@@ -61,7 +61,11 @@ class ChatbotApp:
         self._general_agent_system_prompt = load_general_agent_skills(ctx.settings)
         self._basic_chat_system_prompt = load_basic_chat_skills(ctx.settings)
         # Ensure KB is indexed once at startup.
-        ensure_kb_indexed(self.ctx.settings, self.ctx.stores)
+        ensure_kb_indexed(
+            self.ctx.settings,
+            self.ctx.stores,
+            tenant_id=self.ctx.settings.default_tenant_id,
+        )
 
     @classmethod
     def create(cls, settings: Settings, providers: ProviderBundle) -> "ChatbotApp":
@@ -80,7 +84,7 @@ class ChatbotApp:
             judge_llm=self.ctx.providers.judge,
             session=session,
         )
-        list_docs_tool = make_list_docs_tool(s, stores)
+        list_docs_tool = make_list_docs_tool(s, stores, session)
         memory_tools = make_memory_tools(stores, session)
 
         return [calculator, rag_tool, list_docs_tool] + memory_tools
@@ -97,10 +101,22 @@ class ChatbotApp:
             s,
             session_id=session.session_id,
             trace_name="upload_ingest",
-            metadata={"num_files": len(upload_paths)},
+            metadata={
+                "num_files": len(upload_paths),
+                "tenant_id": session.tenant_id,
+                "user_id": session.user_id,
+                "conversation_id": session.conversation_id,
+                "request_id": session.request_id,
+            },
         )
 
-        doc_ids = ingest_paths(s, self.ctx.stores, upload_paths, source_type="upload")
+        doc_ids = ingest_paths(
+            s,
+            self.ctx.stores,
+            upload_paths,
+            source_type="upload",
+            tenant_id=session.tenant_id,
+        )
         session.uploaded_doc_ids.extend([d for d in doc_ids if d not in session.uploaded_doc_ids])
 
         if not doc_ids:
@@ -221,6 +237,9 @@ class ChatbotApp:
 
         upload_paths = upload_paths or []
 
+        # Ensure KB is available for this tenant before routing.
+        ensure_kb_indexed(self.ctx.settings, self.ctx.stores, tenant_id=session.tenant_id)
+
         # 1) If uploads are present, ingest + kick off rag tool.
         if upload_paths:
             self.ingest_and_summarize_uploads(session, upload_paths)
@@ -234,6 +253,10 @@ class ChatbotApp:
             "router_reasons": decision.reasons,
             "has_attachments": bool(upload_paths),
             "uploaded_doc_ids": list(session.uploaded_doc_ids),
+            "tenant_id": session.tenant_id,
+            "user_id": session.user_id,
+            "conversation_id": session.conversation_id,
+            "request_id": session.request_id,
         }
 
         callbacks = get_langchain_callbacks(

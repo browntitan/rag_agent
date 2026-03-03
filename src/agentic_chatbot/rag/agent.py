@@ -151,6 +151,7 @@ def run_rag_agent(
 
         retrieval = retrieve_candidates(
             stores, query,
+            tenant_id=getattr(session, "tenant_id", settings.default_tenant_id),
             preferred_doc_ids=preferred_doc_ids,
             must_include_uploads=must_include_uploads,
             top_k_vector=top_k_vector,
