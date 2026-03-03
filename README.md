@@ -1,0 +1,1210 @@
+# Agentic RAG Chatbot v2
+
+A production-grade document intelligence chatbot built on LangChain. It combines a rule-based router, a general-purpose tool-calling agent, and a loop-based specialist RAG agent backed by PostgreSQL with pgvector. The system can reason across multiple documents, extract and compare clauses, identify requirements, and produce grounded answers with inline citations.
+
+---
+
+## Table of Contents
+
+1. [What This System Does](#1-what-this-system-does)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Prerequisites](#3-prerequisites)
+4. [Container Setup](#4-container-setup)
+5. [Installation](#5-installation)
+6. [Configuration](#6-configuration)
+7. [Database Setup](#7-database-setup)
+8. [First Run](#8-first-run)
+9. [CLI Reference](#9-cli-reference)
+10. [Adding Documents](#10-adding-documents)
+11. [Customising Agent Behaviour — skills.md](#11-customising-agent-behaviour--skillsmd)
+12. [Technical Architecture](#12-technical-architecture)
+13. [End-to-End Workflow](#13-end-to-end-workflow)
+14. [Example Queries](#14-example-queries)
+15. [Limitations](#15-limitations)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Environment Variable Reference](#17-environment-variable-reference)
+18. [Project Layout](#18-project-layout)
+
+---
+
+## 1. What This System Does
+
+This chatbot answers questions by autonomously deciding whether a query needs document search or can be answered directly, then executing a multi-step tool loop to retrieve, compare, and synthesise evidence from indexed documents.
+
+**Core capabilities:**
+
+| Capability | Example Query |
+|---|---|
+| General knowledge | "What is fan-out in agentic systems?" |
+| Document Q&A | "What does our internal policy say about data retention?" |
+| Clause extraction | "What does clause 33 say in the supply chain agreement?" |
+| Requirements extraction | "Find all requirements from the specification document" |
+| Document diff | "What are the differences between contract_v1 and contract_v2?" |
+| Clause-by-clause comparison | "Go through both termsets and compare their clauses one by one" |
+| Sequential document processing | "First read doc_1, then answer the questions in doc_2" |
+| Math | "What is 15% of £2,340,000?" |
+| Persistent memory | "Remember that the contract value is £2.3M" |
+
+**Document types supported:**
+
+- Plain text (`.txt`, `.md`)
+- PDF — native text extraction + automatic OCR fallback for scanned pages
+- Word documents (`.docx`)
+- Images (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.gif`) via PaddleOCR
+
+---
+
+## 2. Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          User Input                             │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+                    ┌───────────▼───────────┐
+                    │  Deterministic Router  │
+                    │  (no LLM, pure regex)  │
+                    └──────┬────────┬────────┘
+                           │        │
+                    BASIC  │        │ AGENT
+                           │        │
+              ┌────────────▼┐      ┌▼────────────────────────────┐
+              │  Basic Chat  │      │     General Agent (loop)    │
+              │  (LLM only,  │      │  system prompt from         │
+              │   no tools)  │      │  data/skills/general_agent  │
+              └─────────────┘      └──┬──────────────────────────┘
+                                      │ tools available:
+                                      ├── calculator
+                                      ├── list_indexed_docs
+                                      ├── memory_save / memory_load / memory_list
+                                      └── rag_agent_tool ──────────────────────┐
+                                                                                │
+                                                              ┌─────────────────▼──────────────────┐
+                                                              │       RAG Agent (loop)             │
+                                                              │  system prompt from                │
+                                                              │  data/skills/rag_agent.md          │
+                                                              │                                    │
+                                                              │  11 specialist tools:              │
+                                                              │  resolve_document                  │
+                                                              │  search_document                   │
+                                                              │  search_all_documents              │
+                                                              │  extract_clauses                   │
+                                                              │  list_document_structure           │
+                                                              │  extract_requirements              │
+                                                              │  compare_clauses                   │
+                                                              │  diff_documents                    │
+                                                              │  scratchpad_write/read/list        │
+                                                              └──────────────┬─────────────────────┘
+                                                                             │
+                                                             ┌───────────────▼────────────────┐
+                                                             │         PostgreSQL              │
+                                                             │  ┌──────────────────────────┐  │
+                                                             │  │ documents table           │  │
+                                                             │  │ (title, type, hash, ...)  │  │
+                                                             │  ├──────────────────────────┤  │
+                                                             │  │ chunks table              │  │
+                                                             │  │ embedding vector(768)     │  │
+                                                             │  │ ts tsvector (FTS)         │  │
+                                                             │  │ clause_number, chunk_type │  │
+                                                             │  ├──────────────────────────┤  │
+                                                             │  │ memory table              │  │
+                                                             │  │ (session_id, key, value)  │  │
+                                                             │  └──────────────────────────┘  │
+                                                             │  Extensions: pgvector, pg_trgm  │
+                                                             └────────────────────────────────┘
+```
+
+---
+
+## 3. Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.10+ | 3.11 recommended |
+| Docker | 24+ | For PostgreSQL and Ollama containers |
+| Ollama **or** Azure OpenAI | — | One is required |
+| PostgreSQL 15/16 with pgvector | — | Easiest via Docker (see below) |
+| LangGraph | `>=0.2.0` | Installed automatically via `requirements.txt` |
+| 8 GB RAM | — | 16 GB recommended for larger models |
+| Internet access | — | PaddleOCR downloads models on first use (~200 MB) |
+
+**GPU (optional):** Required only if you set `OCR_USE_GPU=true`. The system runs fine on CPU.
+
+---
+
+## 4. Container Setup
+
+### 4.1 PostgreSQL with pgvector (Required)
+
+The database stores document chunks, vector embeddings, and cross-turn memory.
+
+```bash
+docker pull pgvector/pgvector:pg16
+
+docker run -d \
+  --name ragdb \
+  -e POSTGRES_DB=ragdb \
+  -e POSTGRES_USER=raguser \
+  -e POSTGRES_PASSWORD=ragpass \
+  -p 5432:5432 \
+  --restart unless-stopped \
+  pgvector/pgvector:pg16
+```
+
+Verify it is running:
+
+```bash
+docker exec ragdb psql -U raguser -d ragdb -c "SELECT version();"
+```
+
+The application will create its own tables via the `migrate` command — no manual SQL needed.
+
+**Connection string** for your `.env`:
+```
+PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+```
+
+### 4.2 Ollama (Required if not using Azure)
+
+Ollama serves the local LLM and embedding model.
+
+```bash
+# Pull and start the Ollama container
+docker pull ollama/ollama
+
+docker run -d \
+  --name ollama \
+  -p 11434:11434 \
+  -v ollama_data:/root/.ollama \
+  --restart unless-stopped \
+  ollama/ollama
+```
+
+Pull the required models inside the container:
+
+```bash
+# Embedding model (required — 768-dim output)
+docker exec ollama ollama pull nomic-embed-text
+
+# Chat model (choose one)
+docker exec ollama ollama pull llama3.1:8b       # smallest / fastest
+docker exec ollama ollama pull llama3.1:70b      # better quality
+docker exec ollama ollama pull qwen2.5:14b       # good balance
+docker exec ollama ollama pull gpt-oss:20b       # project default
+```
+
+Verify Ollama is accessible:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+> **GPU acceleration for Ollama:** Add `--gpus all` to the `docker run` command if you have an NVIDIA GPU and the NVIDIA Container Toolkit installed.
+
+### 4.3 Langfuse Observability (Optional)
+
+Langfuse provides a UI for tracing agent decisions, tool calls, and RAG sub-steps. Skip this section if you do not need observability.
+
+Langfuse requires its own PostgreSQL instance. The simplest setup uses their official `docker-compose`:
+
+```bash
+# Clone the Langfuse repo
+git clone https://github.com/langfuse/langfuse.git langfuse-server
+cd langfuse-server
+
+# Start Langfuse (includes its own Postgres)
+docker compose up -d
+
+# Open the UI
+open http://localhost:3000
+```
+
+Create a project in the UI, copy the public and secret keys, and add them to your `.env`:
+
+```
+LANGFUSE_HOST=http://localhost:3000
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+---
+
+## 5. Installation
+
+### 5.1 Clone and Set Up Python Environment
+
+```bash
+git clone <repository-url>
+cd langchain_agentic_chatbot_v2
+
+python -m venv .venv
+
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
+```
+
+### 5.2 Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+> **Note on PaddleOCR:** The first time a PDF or image file triggers OCR, PaddleOCR downloads its models (~200 MB). This requires a one-time internet connection. Subsequent runs use the cached models.
+
+> **GPU users:** Replace `paddlepaddle` with `paddlepaddle-gpu` in `requirements.txt` before installing, then set `OCR_USE_GPU=true` in your `.env`.
+
+### 5.3 Verify Installation
+
+```bash
+python run.py --help
+```
+
+Expected output:
+```
+Usage: run.py [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  ask            Run a single-turn query.
+  chat           Start an interactive chat session.
+  init-kb        Force (re)indexing of the built-in demo KB.
+  migrate        Apply the database schema (idempotent).
+  reset-indexes  Truncate all indexed data from PostgreSQL.
+```
+
+---
+
+## 6. Configuration
+
+### 6.1 Create Your `.env` File
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set at minimum:
+
+```env
+# ── Provider (choose one) ─────────────────────────────────────────
+LLM_PROVIDER=ollama
+EMBEDDINGS_PROVIDER=ollama
+
+# ── Ollama ────────────────────────────────────────────────────────
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=llama3.1:8b        # or whichever model you pulled
+OLLAMA_EMBED_MODEL=nomic-embed-text
+
+# ── Database ──────────────────────────────────────────────────────
+PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+EMBEDDING_DIM=768                     # must match the embed model output
+```
+
+### 6.2 Using Azure OpenAI Instead of Ollama
+
+```env
+LLM_PROVIDER=azure
+EMBEDDINGS_PROVIDER=azure
+
+AZURE_OPENAI_API_KEY=<your-key>
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-05-01-preview
+AZURE_OPENAI_DEPLOYMENT=gpt-4o           # chat deployment name
+AZURE_OPENAI_EMBED_DEPLOYMENT=text-embedding-ada-002
+
+# Azure ada-002 embeddings output 1536 dims — must update this:
+EMBEDDING_DIM=1536
+```
+
+> **Important:** If you change `EMBEDDING_DIM`, you must also edit `src/agentic_chatbot/db/schema.sql` and change `vector(768)` to `vector(1536)` before running `migrate`. If you have existing data, run `reset-indexes --yes` first.
+
+---
+
+## 7. Database Setup
+
+Apply the schema (creates tables, indexes, and PostgreSQL extensions):
+
+```bash
+python run.py migrate
+```
+
+This command is idempotent — safe to run multiple times. It will not delete existing data.
+
+**What is created:**
+
+| Object | Type | Purpose |
+|---|---|---|
+| `vector` extension | Extension | pgvector for ANN vector search |
+| `pg_trgm` extension | Extension | Trigram-based fuzzy title matching |
+| `documents` table | Table | Document metadata (title, type, hash) |
+| `chunks` table | Table | Document chunks with embeddings and full-text index |
+| `memory` table | Table | Cross-turn session memory |
+| HNSW index | Index | Fast approximate nearest-neighbour search on embeddings |
+| GIN index | Index | Full-text search on chunk content |
+
+---
+
+## 8. First Run
+
+### 8.1 Index the Built-in Knowledge Base
+
+The `data/kb/` directory contains 12 demo documents (product docs, API references, runbooks). Index them:
+
+```bash
+python run.py init-kb
+```
+
+This is also done automatically the first time you run `ask` or `chat`.
+
+### 8.2 Ask a Single Question
+
+```bash
+python run.py ask -q "What authentication methods does the API support?"
+```
+
+### 8.3 Start an Interactive Session
+
+```bash
+python run.py chat
+```
+
+Type your question at the `You>` prompt. Use `/upload PATH` to ingest a document mid-conversation, or `/exit` to quit.
+
+---
+
+## 9. CLI Reference
+
+### `ask` — Single-Turn Query
+
+```bash
+python run.py ask [OPTIONS]
+```
+
+| Option | Description |
+|---|---|
+| `-q TEXT` / `--question TEXT` | The question to ask (required) |
+| `-u PATH` / `--upload PATH` | File to ingest before asking (repeatable) |
+| `--force-agent` | Skip router, go straight to GeneralAgent |
+| `--dotenv PATH` | Load a specific `.env` file |
+
+**Examples:**
+
+```bash
+# Simple question
+python run.py ask -q "What is the rate limit for the API?"
+
+# Ingest a PDF and ask about it
+python run.py ask -q "Summarise the key clauses" -u ./contract.pdf
+
+# Ingest multiple files
+python run.py ask -q "Compare these two documents" \
+  -u ./termset_v1.pdf \
+  -u ./termset_v2.pdf
+
+# Force agent mode (bypass router)
+python run.py ask -q "Hello" --force-agent
+```
+
+---
+
+### `chat` — Interactive Session
+
+```bash
+python run.py chat [OPTIONS]
+```
+
+| Option | Description |
+|---|---|
+| `-u PATH` / `--upload PATH` | File(s) to ingest at session start (repeatable) |
+| `--dotenv PATH` | Load a specific `.env` file |
+
+**In-session commands:**
+
+| Command | Description |
+|---|---|
+| `/upload PATH` | Ingest a document mid-conversation |
+| `/exit` or `/quit` | End the session |
+
+**Example:**
+
+```bash
+python run.py chat -u ./policy.pdf -u ./contract.pdf
+```
+
+---
+
+### `migrate` — Apply Database Schema
+
+```bash
+python run.py migrate [--dotenv PATH]
+```
+
+Idempotent. Run this after initial setup and after any `schema.sql` changes.
+
+---
+
+### `init-kb` — Index the Knowledge Base
+
+```bash
+python run.py init-kb [--dotenv PATH]
+```
+
+Forces re-indexing of all files in `data/kb/`. Documents already indexed with the same content hash are skipped.
+
+---
+
+### `reset-indexes` — Clear All Indexed Data
+
+```bash
+python run.py reset-indexes [--yes] [--dotenv PATH]
+```
+
+| Option | Description |
+|---|---|
+| `--yes` / `-y` | Skip the confirmation prompt |
+
+**Warning:** This truncates the `documents`, `chunks`, and `memory` tables. All indexed content and session memory is permanently deleted. Run `init-kb` or `chat` to rebuild.
+
+---
+
+## 10. Adding Documents
+
+### 10.1 Knowledge Base Documents (Permanent)
+
+Place files in `data/kb/` and run:
+
+```bash
+python run.py init-kb
+```
+
+KB documents are indexed once and persist across sessions. They are tagged `source_type='kb'`.
+
+### 10.2 User Uploads (Session Uploads)
+
+Upload documents during a session. They are ingested, embedded, and summarised automatically:
+
+```bash
+# At startup
+python run.py chat -u ./my_document.pdf
+
+# Mid-session (in the chat REPL)
+/upload ./my_document.pdf
+
+# One-shot upload + question
+python run.py ask -q "Find all requirements" -u ./spec.pdf
+```
+
+Uploads are tagged `source_type='upload'` and persist in the database across sessions.
+
+### 10.3 Supported File Types
+
+| Extension | Method | Notes |
+|---|---|---|
+| `.txt`, `.md` | TextLoader | UTF-8 encoding |
+| `.pdf` | PyPDF + PaddleOCR | Native text first; OCR fallback for pages with < 50 chars |
+| `.docx` | Docx2txtLoader | Text extraction only (no images within DOCX) |
+| `.png`, `.jpg`, `.jpeg` | PaddleOCR | Full OCR with reading-order preservation |
+| `.tiff`, `.tif`, `.bmp`, `.gif` | PaddleOCR | Full OCR |
+
+**Controlling OCR:**
+
+```env
+USE_PADDLE_OCR=true           # enable/disable (default: true)
+OCR_LANGUAGE=en               # language code (en, ch, fr, de, etc.)
+OCR_USE_GPU=false             # use GPU for OCR (default: false)
+OCR_MIN_PAGE_CHARS=50         # chars below this threshold trigger OCR on a PDF page
+```
+
+### 10.4 Document Structure Detection
+
+At ingest time, the system automatically classifies each document into one of five structure types using regex heuristics (no LLM call):
+
+| Type | Detection Signal | Splitting Strategy |
+|---|---|---|
+| `general` | No clauses or requirements | Generic recursive character splitting |
+| `structured_clauses` | Numbered clause headers (Clause N, Section N, Article N) | Clause-boundary splitting |
+| `requirements_doc` | shall/must language or REQ-NNN identifiers | Clause or generic + requirement tagging |
+| `policy_doc` | Clause headers + policy/compliance keywords | Clause-boundary splitting |
+| `contract` | Clause headers + contract/agreement keywords | Clause-boundary splitting |
+
+This classification is stored in the `documents` table and affects how the RAG agent retrieves and compares content.
+
+---
+
+## 11. Customising Agent Behaviour — skills.md
+
+The agents' system prompts are loaded from Markdown files at runtime. You can change agent behaviour without touching Python code.
+
+```
+data/skills/
+├── skills.md              ← Shared context injected into ALL agents
+├── general_agent.md       ← GeneralAgent + BasicChat system prompt (fallback path)
+├── rag_agent.md           ← RAGAgent system prompt with tool decision trees
+├── supervisor_agent.md    ← Supervisor routing rules (multi-agent graph)
+├── utility_agent.md       ← Utility agent instructions (calc, memory, list_docs)
+└── basic_chat.md          ← (optional) Dedicated BasicChat prompt
+```
+
+### Hot-Reload Behaviour
+
+| File | Loaded When | Hot-Reloadable? |
+|---|---|---|
+| `data/skills/general_agent.md` | Once at `ChatbotApp` startup | **No** — restart required |
+| `data/skills/rag_agent.md` | On every `run_rag_agent()` call | **Yes** — edit and the next RAG query picks it up |
+| `data/skills/supervisor_agent.md` | Once per graph build (per turn) | **Yes** — next AGENT turn picks it up |
+| `data/skills/utility_agent.md` | Once per graph build (per turn) | **Yes** — next AGENT turn picks it up |
+| `data/skills/skills.md` | Same as the agent it's injected into | Follows its agent |
+
+> **RAG Agent live-editing:** Because `rag_agent.md` is reloaded per-turn, you can refine the RAG agent's decision rules mid-session. The change takes effect on the very next question that triggers RAG.
+
+### How Skills Are Combined
+
+Each agent receives a single concatenated system prompt:
+
+```
+load_general_agent_skills()  =  skills.md  +  "---"  +  general_agent.md
+load_rag_agent_skills()      =  skills.md  +  "---"  +  rag_agent.md
+```
+
+If a `.md` file is missing, the system falls back to a hardcoded Python constant — so the system always works even without the `data/skills/` directory.
+
+### Common Customisations
+
+- **Domain context** — add organisation-specific facts to `skills.md`:
+  ```markdown
+  ## Organisation Context
+  We are a supply chain company. Our termsets follow ISO 22000 and contain 52 numbered clauses.
+  Always flag clauses that may conflict with GDPR obligations.
+  ```
+- **Output format** — change how the GeneralAgent presents answers in `general_agent.md`
+- **Search strategy hints** — add document-type-specific rules to `rag_agent.md`
+- **Citation format** — adjust inline citation style in `skills.md`
+
+---
+
+## 12. Technical Architecture
+
+### 12.0 Multi-Agent Graph (Supervisor Pattern)
+
+The AGENT path uses a **LangGraph supervisor graph** that routes to specialist agents instead of running a single GeneralAgent with all tools. This is built with `StateGraph` and the `Send` API for parallel execution.
+
+```
+START → supervisor ──→ rag_agent ──→ supervisor (loop)
+                  ├──→ utility_agent ──→ supervisor (loop)
+                  ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
+                  └──→ END
+```
+
+**Supervisor** (`graph/supervisor.py`): An LLM node that reads conversation history and returns a JSON routing decision — which specialist agent to invoke next. Valid targets: `rag_agent`, `utility_agent`, `parallel_rag`, `__end__`. The supervisor loops: after each agent finishes, it decides whether to route to another agent or stop.
+
+**RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. All 11 RAG tools are unchanged.
+
+**Utility Agent** (`graph/nodes/utility_node.py`): A `create_react_agent` subgraph with `calculator`, `list_indexed_docs`, and `memory_*` tools.
+
+**Parallel RAG** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. Results are merged by `rag_synthesizer` using an `operator.add` reducer.
+
+**Fallback**: If the graph fails to build (e.g., LLM doesn't support tool calling), the orchestrator automatically falls back to the old single-agent path (`run_general_agent` with `rag_agent_tool`).
+
+### 12.1 Request Routing
+
+The router runs before any LLM call. It uses pure regex and heuristics — no token cost:
+
+```
+AGENT route triggered when:
+  - attachments present (confidence 1.0)
+  - tool-like verbs found (calculate, search, find, compare, retrieve, ...)
+  - citation/grounding language (cite, sources, according to, ...)
+  - high-stakes topics (medical, legal, contract, financial, compliance, ...)
+  - long input > 600 characters
+  - --force-agent flag set
+
+BASIC route:
+  - everything else (general knowledge, small talk)
+```
+
+### 12.2 GeneralAgent
+
+The GeneralAgent is powered by **LangGraph `create_react_agent`** — a compiled `StateGraph` that implements the ReAct (Reason + Act) pattern as a directed graph of nodes:
+
+```
+┌──────────────────┐   tool_calls   ┌────────────────────┐
+│   agent node     │ ─────────────► │   tools node       │
+│   (LLM invoke)   │ ◄───────────── │   (tool execution) │
+└──────────────────┘  ToolMessages  └────────────────────┘
+         │
+         │  no tool_calls
+         ▼
+   Final AIMessage returned
+```
+
+**How it works:**
+1. System prompt loaded from `data/skills/general_agent.md` is prepended as a `SystemMessage`
+2. User message is appended as a `HumanMessage`
+3. Graph is invoked: `graph.invoke({"messages": msgs}, config={"recursion_limit": N})`
+4. The ReAct loop runs automatically — LLM → tool execution → LLM — until no further tool calls
+5. The result contains the full updated message history; the last `AIMessage` text is returned
+
+**Budget control:** The recursion limit is computed as `(max(MAX_AGENT_STEPS, MAX_TOOL_CALLS) + 1) × 2 + 1`. This accounts for 2 graph node visits per ReAct cycle (agent + tools) plus a buffer. When the limit is hit, `GraphRecursionError` is caught and a graceful partial response is returned.
+
+**Available tools:** `calculator`, `list_indexed_docs`, `memory_save`, `memory_load`, `memory_list`, `rag_agent_tool`
+
+**Fallback:** If the LLM does not support `bind_tools()`, a plan-execute fallback generates a JSON plan, executes tools sequentially, and synthesises a final answer. This path does not use LangGraph.
+
+### 12.3 RAGAgent
+
+The RAGAgent is also powered by **LangGraph `create_react_agent`**, activated when `rag_agent_tool` is called by the GeneralAgent. It operates as an autonomous specialist loop with 11 dedicated tools:
+
+| Tool | Purpose |
+|---|---|
+| `resolve_document(name_or_hint)` | Fuzzy-match a document name to a `doc_id` using rapidfuzz + pg_trgm |
+| `search_document(doc_id, query, strategy)` | Vector/keyword/hybrid search scoped to one document |
+| `search_all_documents(query, strategy)` | Cross-document search (no doc filter) |
+| `extract_clauses(doc_id, clause_numbers)` | Retrieve exact clause text by number ("3", "3.2", "10.1") |
+| `list_document_structure(doc_id)` | Show the clause/section outline of a document |
+| `extract_requirements(doc_id, filter)` | SQL `WHERE chunk_type='requirement'` with optional semantic re-rank |
+| `compare_clauses(doc_id_1, doc_id_2, clause_numbers)` | Side-by-side clause text from two documents |
+| `diff_documents(doc_id_1, doc_id_2)` | Structural outline diff (shared vs. unique clauses) |
+| `scratchpad_write(key, value)` | Store intermediate findings in `session.scratchpad` |
+| `scratchpad_read(key)` | Retrieve stored findings |
+| `scratchpad_list()` | List all scratchpad keys |
+
+**How it works:**
+1. System prompt loaded from `data/skills/rag_agent.md` is prepended as a `SystemMessage`
+2. A task message containing the `QUERY`, `PREFERRED_DOC_IDS`, and strategy hints is passed as a `HumanMessage`
+3. LangGraph runs the same ReAct loop — tool calls → tool results → tool calls — until the agent has sufficient evidence
+4. A **final synthesis call** asks the LLM to produce the RAG contract JSON from all accumulated tool results
+5. The structured contract dict is returned to the GeneralAgent
+
+**Budget control:** Uses formula `(MAX_RAG_AGENT_STEPS + MAX_TOOL_CALLS + 1) × 2 + 1` for the recursion limit. On budget exhaustion, synthesis proceeds with whatever evidence was collected before the limit.
+
+The RAGAgent returns a structured contract dict:
+```json
+{
+  "answer": "...",
+  "citations": [{"citation_id": "...", "title": "...", "location": "...", "snippet": "..."}],
+  "used_citation_ids": ["..."],
+  "confidence": 0.92,
+  "retrieval_summary": {
+    "query_used": "...",
+    "steps": 4,
+    "tool_calls_used": 7,
+    "tool_call_log": ["resolve_document({...})", "search_document({...})", "..."],
+    "citations_found": 8
+  },
+  "followups": ["What does clause 34 say?"],
+  "warnings": []
+}
+```
+
+### 12.4 Document Ingestion Pipeline
+
+```
+File path
+    │
+    ├─ Compute SHA-1 hash (deduplication key)
+    │
+    ├─ Check doc_store.document_exists() → skip if unchanged
+    │
+    ├─ _load_documents(path, settings)
+    │     ├── .txt/.md  → TextLoader
+    │     ├── .pdf      → PyPDF per page; OCR for pages < 50 chars via PyMuPDF + PaddleOCR
+    │     ├── .docx     → Docx2txtLoader
+    │     └── image     → PaddleOCR → single Document
+    │
+    ├─ detect_structure(full_text)
+    │     → classifies as general / structured_clauses / requirements_doc / policy_doc / contract
+    │
+    ├─ _split_with_structure(settings, docs, structure)
+    │     ├── has_clauses=True  → clause_split() at heading boundaries
+    │     └── has_clauses=False → RecursiveCharacterTextSplitter (chunk_size=900, overlap=150)
+    │     └── post-tag chunk_type='requirement' where shall/must/REQ-NNN detected
+    │
+    ├─ _build_chunk_records() → list[ChunkRecord]
+    │     (chunk_id, doc_id, chunk_index, content, chunk_type, page_number,
+    │      clause_number, section_title, embedding=None)
+    │
+    ├─ chunk_store.add_chunks(records)
+    │     → generate embeddings via embeddings model
+    │     → batch INSERT with pgvector
+    │
+    └─ doc_store.upsert_document(DocumentRecord)
+          → title, source_type, file_type, doc_structure_type, num_chunks, content_hash
+```
+
+### 12.5 Retrieval
+
+The RAGAgent's search tools support three strategies:
+
+| Strategy | Method | Best For |
+|---|---|---|
+| `vector` | Cosine similarity via HNSW index on pgvector | Semantic / conceptual questions |
+| `keyword` | PostgreSQL `tsvector`/`tsquery` full-text search | Exact term matching, clause numbers, defined terms |
+| `hybrid` | Union of vector + keyword results, deduplicated by highest score | General queries (default) |
+
+All search functions accept an optional `doc_id_filter` which is pushed to the SQL `WHERE` clause for efficient single-document search.
+
+### 12.6 Scratchpad and Persistent Memory
+
+**Scratchpad** (`session.scratchpad: dict[str, str]`):
+- Lives in the `ChatSession` object
+- Cleared at the end of each turn if `CLEAR_SCRATCHPAD_PER_TURN=true`
+- Used by the RAGAgent to accumulate intermediate findings across tool calls within a single turn
+- Tools: `scratchpad_write`, `scratchpad_read`, `scratchpad_list`
+
+**Persistent Memory** (PostgreSQL `memory` table):
+- Keyed by `(session_id, key)`
+- Survives across turns and restarts
+- Used by the GeneralAgent via `memory_save`, `memory_load`, `memory_list`
+- Intended for facts the user explicitly confirms or asks the agent to remember
+
+### 12.7 Database Schema
+
+```sql
+-- Tracks indexed documents
+CREATE TABLE documents (
+    doc_id             TEXT PRIMARY KEY,        -- stable hash-based ID
+    title              TEXT NOT NULL,
+    source_type        TEXT NOT NULL,           -- 'kb' | 'upload'
+    source_path        TEXT,
+    content_hash       TEXT NOT NULL,           -- SHA-1 for dedup
+    num_chunks         INTEGER DEFAULT 0,
+    ingested_at        TIMESTAMPTZ DEFAULT now(),
+    file_type          TEXT,                    -- 'pdf' | 'txt' | 'md' | 'docx'
+    doc_structure_type TEXT DEFAULT 'general'   -- classification
+);
+
+-- Document chunks with vector embeddings
+CREATE TABLE chunks (
+    chunk_id       TEXT PRIMARY KEY,            -- "doc_id#chunk0042"
+    doc_id         TEXT REFERENCES documents,
+    chunk_index    INTEGER NOT NULL,
+    page_number    INTEGER,                     -- zero-based page
+    clause_number  TEXT,                        -- e.g. "3.2", "10.1.4"
+    section_title  TEXT,
+    content        TEXT NOT NULL,
+    embedding      vector(768),                 -- HNSW cosine index
+    ts             tsvector GENERATED ALWAYS    -- GIN full-text index
+                   AS (to_tsvector('english', content)) STORED,
+    chunk_type     TEXT DEFAULT 'general'       -- 'general'|'clause'|'requirement'|...
+);
+
+-- Cross-turn session memory
+CREATE TABLE memory (
+    id          SERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    updated_at  TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(session_id, key)
+);
+```
+
+### 12.8 Observability
+
+When Langfuse keys are configured, every turn emits traces including:
+- Router decision and confidence score
+- GeneralAgent: each LLM call, tool call, and result
+- RAGAgent: each tool call, retrieved chunks, and synthesis call
+- Upload ingestion events
+
+Access the Langfuse dashboard at `http://localhost:3000` (if running locally).
+
+---
+
+## 13. End-to-End Workflow
+
+The following traces a query from user input to response:
+
+```
+User: "What are the differences between termset_v1 and termset_v2
+       in clauses 10 through 15?"
+
+1. Orchestrator.process_turn()
+   → route_message() → AGENT (tool_or_multistep_intent)
+
+2. GeneralAgent loop:
+   → LLM sees system prompt (general_agent.md) + user question
+   → LLM calls: rag_agent_tool(
+       query="differences in clauses 10-15 between termset_v1 and termset_v2",
+       preferred_doc_ids_csv=""
+     )
+
+3. rag_agent_tool → run_rag_agent()
+   → RAGAgent loop begins with rag_agent.md system prompt
+
+4. RAGAgent tool calls (automated, no user input):
+   a. resolve_document("termset_v1") → {"doc_id": "kb_abc123", "title": "termset_v1.pdf"}
+   b. resolve_document("termset_v2") → {"doc_id": "kb_def456", "title": "termset_v2.pdf"}
+   c. diff_documents("kb_abc123", "kb_def456")
+      → {shared: [10,11,12,13,14,15], only_in_1: [], only_in_2: [15A]}
+   d. scratchpad_write("diff", <diff result>)
+   e. compare_clauses("kb_abc123", "kb_def456", ["10","11","12","13","14","15"])
+      → side-by-side text for each clause
+
+5. RAGAgent synthesises:
+   → Final answer with inline citations (doc_id#chunk_id)
+   → Returns structured contract dict
+
+6. GeneralAgent receives contract dict:
+   → Formats answer cleanly (strips raw JSON)
+   → Presents answer + citations to user
+
+7. session.clear_scratchpad() (if CLEAR_SCRATCHPAD_PER_TURN=true)
+```
+
+---
+
+## 14. Example Queries
+
+### General Knowledge
+```
+You> What is the difference between HNSW and IVFFlat vector indexes?
+```
+
+### Document Search
+```
+You> What does our internal policy say about data retention?
+```
+```
+You> Find the definition of "Force Majeure" in the uploaded contract.
+```
+
+### Clause Extraction
+```
+You> What does clause 33 say in the supply chain agreement?
+```
+```
+You> Show me the full text of sections 10.1 through 10.4 in the termset.
+```
+
+### Requirements Extraction
+```
+You> Find all requirements from the specification document.
+```
+```
+You> List all SHALL statements in doc.pdf that relate to data security.
+```
+
+### Document Comparison
+```
+You> What are the differences between termset_v1.pdf and termset_v2.pdf?
+```
+```
+You> Go through both contracts and compare their clauses one by one.
+```
+```
+You> Which clauses appear in contract_a but not in contract_b?
+```
+
+### Sequential Document Processing
+```
+You> First read the questions document, then look through the policy document
+     and answer each question with citations.
+```
+
+### Upload and Query
+```bash
+python run.py ask -q "Summarise the key obligations" -u ./nda.pdf
+```
+
+```
+You> /upload ./new_spec.pdf
+You> Find all requirements related to delivery timelines from the spec I just uploaded.
+```
+
+### Memory
+```
+You> Remember that the contract value is £2.3 million.
+You> (next session) What was the contract value we discussed?
+```
+
+### Math
+```
+You> What is 15% of £2,340,000?
+```
+
+### List Available Documents
+```
+You> What documents do you have access to?
+```
+
+---
+
+## 15. Limitations
+
+| Limitation | Detail | Workaround |
+|---|---|---|
+| **Embedding model lock-in** | Changing the embed model requires full data reset + reindex — the vector dimension is baked into the schema | Run `reset-indexes --yes`, update `EMBEDDING_DIM`, update schema.sql `vector(N)`, reindex |
+| **No streaming output** | Full response is generated before display. Both agents use `graph.invoke()` (blocking). Streaming is architecturally possible now that both agents use LangGraph — replace with `graph.astream(stream_mode="messages")` | Use smaller models or increase `OLLAMA_NUM_PREDICT` until streaming is wired |
+| **Single-process, synchronous** | One request at a time; no async concurrency | Wrap in a web server (FastAPI + asyncio) for concurrent users |
+| **OCR quality depends on scan quality** | Very small text, rotated scans, or low-resolution images produce poor OCR | Increase `dpi` in `rag/ocr.py:_render_and_ocr_page` (default 200, try 300) |
+| **PaddleOCR first-run download** | ~200 MB model download on first OCR use | Pre-pull in your Docker image or CI environment |
+| **DOCX images not extracted** | Images embedded inside `.docx` files are ignored | Export to PDF first |
+| **No multi-user isolation** | `memory` table is keyed by session UUID only; no authentication | Add an auth layer and pass user ID as session key |
+| **Azure dimension mismatch** | ada-002 outputs 1536 dims; default schema is 768 | Change `EMBEDDING_DIM=1536` and update schema.sql before first run |
+| **Langfuse is a separate service** | Traces are silently dropped if Langfuse is unreachable | Set `LANGFUSE_PUBLIC_KEY=` (empty) to disable entirely |
+| **No prompt-injection defences** | Agent processes document content with no sanitisation | Add a content-safety layer before ingestion in production |
+| **HNSW index tuning** | Default `m=16, ef_construction=64` may not be optimal for very large collections (>1M chunks) | Tune in `schema.sql` and rebuild index |
+
+---
+
+## 16. Troubleshooting
+
+### `connection refused` on PostgreSQL
+
+```
+psycopg2.OperationalError: connection to server at "localhost" (127.0.0.1),
+port 5432 failed: Connection refused
+```
+
+- Check the container is running: `docker ps | grep ragdb`
+- Start it if stopped: `docker start ragdb`
+- Verify the `PG_DSN` in your `.env` matches the container credentials
+
+---
+
+### `vector type does not exist`
+
+```
+UndefinedObject: type "vector" does not exist
+```
+
+The `pgvector` extension is not loaded. Verify you are using the `pgvector/pgvector:pg16` Docker image (not plain `postgres:16`), then run:
+
+```bash
+python run.py migrate
+```
+
+---
+
+### Ollama model not found
+
+```
+OllamaError: model 'llama3.1:8b' not found
+```
+
+Pull the model:
+
+```bash
+docker exec ollama ollama pull llama3.1:8b
+```
+
+Or set `OLLAMA_CHAT_MODEL` in `.env` to a model you have pulled.
+
+---
+
+### PaddleOCR not installed warning
+
+```
+WARNING: PaddleOCR is not installed. Image files and scanned PDFs will be skipped.
+```
+
+Install the packages:
+
+```bash
+pip install paddlepaddle paddleocr pymupdf pillow
+```
+
+Or disable OCR entirely: `USE_PADDLE_OCR=false` in `.env`.
+
+---
+
+### Embedding dimension mismatch
+
+```
+ValueError: expected vector of dimension 768, got 1536
+```
+
+You changed embedding models without updating `EMBEDDING_DIM` or the schema. Fix:
+
+1. Set `EMBEDDING_DIM=1536` in `.env`
+2. Edit `src/agentic_chatbot/db/schema.sql`: change `vector(768)` → `vector(1536)`
+3. Run `python run.py reset-indexes --yes`
+4. Run `python run.py migrate`
+5. Run `python run.py init-kb`
+
+---
+
+### OCR returns empty results
+
+- Check the image resolution (blur, low DPI). Try increasing DPI in `rag/ocr.py` → `_render_and_ocr_page(dpi=300)`.
+- Verify the language code: `OCR_LANGUAGE=en` for English, `ch` for Chinese, etc.
+- Check PaddleOCR logs by temporarily setting `show_log=True` in `rag/ocr.py:get_ocr_engine`.
+
+---
+
+### `No content extracted from <file> — skipping`
+
+The loader returned no text (empty file, corrupted PDF, or unsupported format). Check:
+- The file is not password-protected
+- For scanned PDFs: ensure `USE_PADDLE_OCR=true` and PaddleOCR is installed
+
+---
+
+## 17. Environment Variable Reference
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `LLM_PROVIDER` | `ollama` | Yes | `ollama` or `azure` |
+| `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
+| `OLLAMA_CHAT_MODEL` | `gpt-oss:20b` | If Ollama | Chat model name |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
+| `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
+| `OLLAMA_NUM_PREDICT` | `512` | No | Max output tokens |
+| `AZURE_OPENAI_API_KEY` | — | If Azure | Azure API key |
+| `AZURE_OPENAI_ENDPOINT` | — | If Azure | Azure resource endpoint |
+| `AZURE_OPENAI_API_VERSION` | `2024-05-01-preview` | If Azure | Azure API version |
+| `AZURE_OPENAI_DEPLOYMENT` | — | If Azure | Chat deployment name |
+| `AZURE_OPENAI_EMBED_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
+| `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
+| `PG_DSN` | `postgresql://localhost:5432/ragdb` | Yes | PostgreSQL connection string |
+| `EMBEDDING_DIM` | `768` | Yes | Must match embed model output |
+| `MAX_AGENT_STEPS` | `10` | No | GeneralAgent max loop iterations |
+| `MAX_TOOL_CALLS` | `12` | No | Max tool calls per turn |
+| `MAX_RAG_AGENT_STEPS` | `8` | No | RAGAgent max tool calls |
+| `RAG_TOPK_VECTOR` | `12` | No | Chunks returned from vector search |
+| `RAG_TOPK_BM25` | `12` | No | Chunks returned from keyword search |
+| `RAG_MAX_RETRIES` | `2` | No | RAG query retry limit |
+| `RAG_MIN_EVIDENCE_CHUNKS` | `2` | No | Minimum chunks required before answering |
+| `SUPERVISOR_MAX_LOOPS` | `5` | No | Max supervisor routing loops per turn |
+| `MAX_PARALLEL_RAG_WORKERS` | `4` | No | Max parallel RAG workers for document comparison |
+| `ENABLE_PARALLEL_RAG` | `true` | No | Enable parallel RAG via Send API |
+| `CHUNK_SIZE` | `900` | No | Characters per chunk |
+| `CHUNK_OVERLAP` | `150` | No | Character overlap between chunks |
+| `KB_DIR` | `./data/kb` | No | Knowledge base directory |
+| `UPLOADS_DIR` | `./data/uploads` | No | User uploads directory |
+| `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
+| `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
+| `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
+| `OCR_USE_GPU` | `false` | No | Use GPU for OCR (requires CUDA) |
+| `OCR_MIN_PAGE_CHARS` | `50` | No | PDF pages with fewer chars trigger OCR |
+| `LANGFUSE_HOST` | `http://localhost:3000` | No | Langfuse server URL |
+| `LANGFUSE_PUBLIC_KEY` | — | No | Langfuse public key (leave empty to disable) |
+| `LANGFUSE_SECRET_KEY` | — | No | Langfuse secret key |
+| `LANGFUSE_DEBUG` | `false` | No | Enable Langfuse debug logging |
+
+---
+
+## 18. Project Layout
+
+```
+langchain_agentic_chatbot_v2/
+│
+├── run.py                         # Entry point — adds src/ to PYTHONPATH
+├── requirements.txt               # Python dependencies
+├── .env.example                   # Template for environment variables
+│
+├── data/
+│   ├── kb/                        # Built-in knowledge base documents
+│   │   ├── 01_product_overview.md
+│   │   ├── 02_pricing_and_plans.md
+│   │   ├── 03_security_and_privacy.md
+│   │   ├── 04_integrations_and_tools.md
+│   │   ├── 05_release_notes.md
+│   │   ├── api_auth.md
+│   │   ├── api_endpoints.md
+│   │   ├── api_examples.md
+│   │   ├── api_rate_limits.md
+│   │   ├── runbook_data_pipeline.md
+│   │   ├── runbook_incident_response.md
+│   │   └── runbook_oncall_handover.md
+│   ├── skills/                    # Agent system prompts (edit without code changes)
+│   │   ├── skills.md              # Shared context injected into all agents
+│   │   ├── general_agent.md       # GeneralAgent + BasicChat instructions + few-shot examples
+│   │   ├── rag_agent.md           # RAGAgent decision trees + failure recovery guide
+│   │   ├── supervisor_agent.md    # Supervisor routing rules (multi-agent graph)
+│   │   ├── utility_agent.md       # Utility agent instructions
+│   │   └── basic_chat.md          # (optional) Dedicated BasicChat prompt
+│   └── uploads/                   # Runtime upload directory
+│
+├── docs/                          # Additional architecture and design docs
+│   ├── ARCHITECTURE.md            # System architecture, LangGraph flows, design decisions
+│   ├── PATTERNS.md                # 11 agentic patterns implemented + summary table
+│   ├── RAG_AGENT_DESIGN.md        # RAGAgent loop design, all 11 tools, output contract
+│   ├── TOOLS_AND_TOOL_CALLING.md  # Tool design principles, LangGraph loop, all tool schemas
+│   ├── RAG_TOOL_CONTRACT.md       # Full rag_agent_tool output schema specification
+│   ├── PROVIDERS.md               # Ollama vs Azure OpenAI provider configuration
+│   ├── OBSERVABILITY_LANGFUSE.md  # Langfuse tracing setup and trace structure
+│   ├── ROUTER_RUBRIC.md           # Router decision rules and confidence scoring
+│   ├── KB_DEMO_PACKS.md           # Built-in knowledge base document descriptions
+│   └── COMPOSITION.md             # How the system components compose together
+│
+└── src/agentic_chatbot/
+    ├── cli.py                     # Typer CLI (ask, chat, migrate, init-kb, reset-indexes)
+    ├── config.py                  # Settings dataclass + load_settings() from env
+    │
+    ├── agents/
+    │   ├── orchestrator.py        # ChatbotApp — top-level router + multi-agent graph coordinator
+    │   ├── general_agent.py       # Tool-calling loop agent (fallback path)
+    │   ├── basic_chat.py          # Direct LLM call (no tools)
+    │   └── session.py             # ChatSession (messages, scratchpad, uploaded_doc_ids)
+    │
+    ├── graph/                     # Multi-agent supervisor graph (LangGraph)
+    │   ├── builder.py             # Assembles and compiles the StateGraph
+    │   ├── state.py               # AgentState TypedDict with message reducers
+    │   ├── supervisor.py          # Supervisor LLM node + response parser
+    │   ├── session_proxy.py       # Duck-typing bridge for tool compatibility
+    │   └── nodes/
+    │       ├── rag_node.py        # Single RAG agent node (wraps run_rag_agent)
+    │       ├── utility_node.py    # Utility agent subgraph (calc, memory, list_docs)
+    │       ├── parallel_planner_node.py  # Validates sub-tasks before Send fan-out
+    │       ├── rag_worker_node.py        # Parallel RAG worker (one per Send)
+    │       └── rag_synthesizer_node.py   # Merges parallel RAG results
+    │
+    ├── db/
+    │   ├── schema.sql             # PostgreSQL DDL (tables, indexes, extensions)
+    │   ├── connection.py          # ThreadedConnectionPool singleton
+    │   ├── chunk_store.py         # Vector search, keyword search, clause extraction
+    │   ├── document_store.py      # Document metadata CRUD + fuzzy title search
+    │   ├── memory_store.py        # Cross-turn key-value memory
+    │   └── migration.py           # One-time migration helper from legacy Chroma/BM25
+    │
+    ├── providers/
+    │   └── llm_factory.py         # ProviderBundle factory (Ollama / Azure OpenAI)
+    │
+    ├── rag/
+    │   ├── agent.py               # Loop-based RAGAgent with 11 specialist tools
+    │   ├── ingest.py              # File loading → structure detection → chunking → DB
+    │   ├── ocr.py                 # PaddleOCR singleton + image/PDF OCR functions
+    │   ├── structure_detector.py  # Regex-based doc classifier (no LLM)
+    │   ├── clause_splitter.py     # Clause-boundary document splitter
+    │   ├── retrieval.py           # vector_search / keyword_search / hybrid wrappers
+    │   ├── skills.py              # Runtime loader for data/skills/*.md prompt files
+    │   ├── stores.py              # KnowledgeStores dataclass (ChunkStore, DocStore, MemStore)
+    │   ├── answer.py              # Grounded answer synthesis
+    │   ├── grading.py             # LLM-based chunk relevance grading
+    │   └── rewrite.py             # Query rewriting for failed retrievals
+    │
+    ├── router/
+    │   └── router.py              # Deterministic regex router (BASIC vs AGENT)
+    │
+    ├── tools/
+    │   ├── calculator.py          # Simple math tool
+    │   ├── list_docs.py           # list_indexed_docs tool
+    │   ├── memory_tools.py        # memory_save / memory_load / memory_list tools
+    │   ├── rag_agent_tool.py      # rag_agent_tool — wraps RAGAgent as a LangChain tool
+    │   └── rag_tools.py           # 11 RAG specialist tools (resolve, search, extract, compare, ...)
+    │
+    └── observability/
+        └── callbacks.py           # Langfuse LangChain callback wiring
+```
+
+---
+
+## Notes on Production Readiness
+
+This project is a reference implementation and teaching tool. Before deploying in production, consider adding:
+
+- **Input sanitisation** — prevent prompt injection via document content
+- **Authentication and authorisation** — isolate users by adding user IDs to session keys
+- **Rate limiting** — protect against runaway agent loops
+- **Streaming output** — both agents use LangGraph; streaming requires replacing `graph.invoke()` with `graph.astream(stream_mode="messages")` in `general_agent.py` and `rag/agent.py`
+- **Session persistence (checkpointing)** — add `PostgresSaver` from `langgraph-checkpoint-postgres` as the `checkpointer` argument to `create_react_agent()`. Conversations will survive restarts, and time-travel debugging becomes available
+- **Structured output grading** — replace fragile `extract_json()` parsing with `llm.with_structured_output(RagAnswer)` Pydantic models in `rag/agent.py` and `rag/grading.py`
+- **Parallel retrieval** — the multi-agent graph already supports parallel RAG via the Send API; tune `MAX_PARALLEL_RAG_WORKERS` for your workload
+- **Error boundaries** — graceful degradation when LLM or DB is unavailable
+- **CI/CD** — automated tests and schema migration pipeline
+- **Monitoring** — track token usage, latency, and retrieval quality via Langfuse or another observability tool

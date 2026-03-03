@@ -1,0 +1,33 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "chatbot-chat",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["run.py", "chat"],
+      "port": 0,
+      "description": "Interactive CLI chat session (Typer app). Runs until you /exit."
+    },
+    {
+      "name": "chatbot-migrate",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["run.py", "migrate"],
+      "port": 0,
+      "description": "Apply DB schema migrations (idempotent). Exits immediately after completion."
+    },
+    {
+      "name": "chatbot-init-kb",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["run.py", "init-kb"],
+      "port": 0,
+      "description": "Force (re)index the built-in demo knowledge base. Exits after completion."
+    },
+    {
+      "name": "chatbot-reset-indexes",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["run.py", "reset-indexes", "--yes"],
+      "port": 0,
+      "description": "Truncate all documents, chunks, and memory from PostgreSQL. Exits after completion."
+    }
+  ]
+}

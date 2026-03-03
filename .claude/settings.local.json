@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(cat:*)",
+      "Bash(file:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:blog.langchain.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:pub.towardsai.net)",
+      "WebFetch(domain:fast.io)",
+      "WebFetch(domain:langchain-ai.github.io)",
+      "WebFetch(domain:docs.langchain.com)",
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:aipractitioner.substack.com)",
+      "WebFetch(domain:reference.langchain.com)",
+      "Bash(python -c \":*)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/graph/state.py)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/graph/builder.py)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/graph/supervisor.py)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/agents/orchestrator.py)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/tools/rag_agent_tool.py)",
+      "Bash(python3 -m py_compile /Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/src/agentic_chatbot/tools/rag_tools.py)"
+    ]
+  }
+}
