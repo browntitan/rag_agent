@@ -108,6 +108,53 @@ Storage:
 
 ## 4. Container Setup
 
+### 4.0 One-Command Full Stack (Recommended)
+
+This repo now includes:
+
+- `Dockerfile` for the app container
+- `docker-compose.yml` for app + pgvector DB + optional Ollama + optional Langfuse stack
+
+Quick start:
+
+```bash
+cp .env.example .env
+
+# Full local stack: app + pgvector + Ollama
+docker compose --profile ollama up -d --build
+
+# Optional observability stack (Langfuse + deps)
+docker compose --profile ollama --profile observability up -d --build
+```
+
+If using local Ollama, pull models once:
+
+```bash
+docker compose exec ollama ollama pull nomic-embed-text
+docker compose exec ollama ollama pull gpt-oss:20b
+```
+
+Then run backend commands inside the app container:
+
+```bash
+# schema migration + KB indexing
+docker compose exec app python run.py migrate
+docker compose exec app python run.py init-kb
+
+# interactive app
+docker compose exec app python run.py chat
+
+# one-shot/demo
+docker compose exec app python run.py ask -q "What does the API auth doc say?"
+docker compose exec app python run.py demo --list-scenarios
+```
+
+If you use Azure OpenAI instead of Ollama:
+
+```bash
+docker compose up -d --build
+```
+
 ### 4.1 PostgreSQL with pgvector (Required)
 
 The database stores document chunks, vector embeddings, and cross-turn memory.
@@ -177,28 +224,44 @@ curl http://localhost:11434/api/tags
 
 ### 4.3 Langfuse Observability (Optional)
 
-Langfuse provides a UI for tracing agent decisions, tool calls, and RAG sub-steps. Skip this section if you do not need observability.
+Langfuse can be used with this codebase today.
 
-Langfuse requires its own PostgreSQL instance. The simplest setup uses their official `docker-compose`:
+Why: the app already wires LangChain/LangGraph callbacks through `get_langchain_callbacks(...)` in `src/agentic_chatbot/observability/callbacks.py` and emits traces whenever `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set.
+
+Start the built-in Langfuse stack from this repo:
 
 ```bash
-# Clone the Langfuse repo
-git clone https://github.com/langfuse/langfuse.git langfuse-server
-cd langfuse-server
-
-# Start Langfuse (includes its own Postgres)
-docker compose up -d
-
-# Open the UI
-open http://localhost:3000
+docker compose --profile observability up -d
 ```
 
-Create a project in the UI, copy the public and secret keys, and add them to your `.env`:
+Open Langfuse:
 
-```
+- UI: `http://localhost:3000`
+- MinIO console (optional): `http://localhost:9091`
+
+Then either:
+
+1. Create a project in the UI and copy keys into `.env`, or
+2. Pre-seed project/user via `LANGFUSE_INIT_*` variables in `.env` before starting compose.
+
+Set/verify these in `.env` for the app:
+
+```env
+# if running app on host:
 LANGFUSE_HOST=http://localhost:3000
+
+# if running app via docker compose:
+LANGFUSE_HOST_DOCKER=http://langfuse-web:3000
+
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_DEBUG=false
+```
+
+Restart app container after key changes:
+
+```bash
+docker compose restart app
 ```
 
 ---
@@ -352,7 +415,18 @@ This command is idempotent — safe to run multiple times. It will not delete ex
 | HNSW index | Index | Fast approximate nearest-neighbour search on embeddings |
 | GIN index | Index | Full-text search on chunk content |
 
-### 7.1 Backend Bootstrap Checklist (End-to-End)
+### 7.1 Database Setup via Docker Compose
+
+If you started the containerized stack, run migrations from the app container:
+
+```bash
+docker compose exec app python run.py migrate
+docker compose exec app python run.py init-kb
+```
+
+The app entrypoint can also auto-run migrations (`APP_AUTO_MIGRATE=true`), but running the explicit commands above is the most reliable first-run check.
+
+### 7.2 Backend Bootstrap Checklist (End-to-End)
 
 Run these in order on a fresh setup:
 
@@ -1127,6 +1201,10 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
 | `JUDGE_TEMPERATURE` | `0.0` | No | Judge-model temperature |
 | `PG_DSN` | `postgresql://localhost:5432/ragdb` | Yes | PostgreSQL connection string |
+| `RAG_DB_NAME` | `ragdb` | No | Compose-managed primary DB name |
+| `RAG_DB_USER` | `raguser` | No | Compose-managed primary DB user |
+| `RAG_DB_PASSWORD` | `ragpass` | No | Compose-managed primary DB password |
+| `RAG_DB_PORT` | `5432` | No | Host port for compose Postgres |
 | `EMBEDDING_DIM` | `768` | Yes | Must match embed model output |
 | `MAX_AGENT_STEPS` | `10` | No | GeneralAgent max loop iterations |
 | `MAX_TOOL_CALLS` | `12` | No | Max tool calls per turn |
@@ -1158,6 +1236,12 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `GROUNDED_ANSWER_PROMPT_PATH` | `./data/prompts/grounded_answer.txt` | No | Grounded-answer prompt template path |
 | `RAG_SYNTHESIS_PROMPT_PATH` | `./data/prompts/rag_synthesis.txt` | No | RAG synthesis prompt template path |
 | `PARALLEL_RAG_SYNTHESIS_PROMPT_PATH` | `./data/prompts/parallel_rag_synthesis.txt` | No | Parallel-RAG synthesis prompt template path |
+| `WAIT_FOR_DB` | `true` | No | App container waits for DB before startup commands |
+| `DB_WAIT_TIMEOUT_SECONDS` | `90` | No | DB wait timeout in app entrypoint |
+| `APP_AUTO_MIGRATE` | `true` | No | Auto-run `python run.py migrate` in app container entrypoint |
+| `APP_AUTO_INIT_KB` | `false` | No | Auto-run `python run.py init-kb` in app container entrypoint |
+| `OLLAMA_BASE_URL_DOCKER` | `http://ollama:11434` | No | Internal Ollama URL injected into app service in compose |
+| `LANGFUSE_HOST_DOCKER` | `http://langfuse-web:3000` | No | Internal Langfuse URL injected into app service in compose |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
 | `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
 | `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
@@ -1167,6 +1251,15 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `LANGFUSE_PUBLIC_KEY` | — | No | Langfuse public key (leave empty to disable) |
 | `LANGFUSE_SECRET_KEY` | — | No | Langfuse secret key |
 | `LANGFUSE_DEBUG` | `false` | No | Enable Langfuse debug logging |
+| `LANGFUSE_WEB_PORT` | `3000` | No | Host port for Langfuse UI in compose |
+| `LANGFUSE_POSTGRES_PASSWORD` | `postgres` | No | Langfuse Postgres password in compose |
+| `LANGFUSE_REDIS_AUTH` | `myredissecret` | No | Langfuse Redis password in compose |
+| `LANGFUSE_CLICKHOUSE_PASSWORD` | `clickhouse` | No | Langfuse ClickHouse password in compose |
+| `LANGFUSE_MINIO_ROOT_USER` | `minio` | No | Langfuse MinIO user in compose |
+| `LANGFUSE_MINIO_ROOT_PASSWORD` | `miniosecret` | No | Langfuse MinIO password in compose |
+| `LANGFUSE_NEXTAUTH_SECRET` | `mysecret` | No | Langfuse web auth secret in compose |
+| `LANGFUSE_SALT` | `mysalt` | No | Langfuse salt value in compose |
+| `LANGFUSE_ENCRYPTION_KEY` | `000...000` | No | 32-char Langfuse encryption key |
 
 ---
 
@@ -1178,6 +1271,10 @@ langchain_agentic_chatbot_v2/
 ├── run.py                         # Entry point — adds src/ to PYTHONPATH
 ├── requirements.txt               # Python dependencies
 ├── .env.example                   # Template for environment variables
+├── Dockerfile                     # App container image
+├── docker-compose.yml             # Full local stack: app + db + optional ollama/langfuse
+├── docker/
+│   └── entrypoint.sh              # App startup (wait for DB + optional auto migrate/init)
 │
 ├── data/
 │   ├── kb/                        # Built-in knowledge base documents
