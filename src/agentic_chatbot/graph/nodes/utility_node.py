@@ -61,7 +61,8 @@ def make_utility_agent_node(
             msgs.append(SystemMessage(content=system_prompt))
         msgs.extend(state.get("messages", []))
 
-        recursion_limit = (settings.max_agent_steps + 1) * 2 + 1
+        # Match GeneralAgent budgeting: account for both LLM-step and tool-call caps.
+        recursion_limit = (max(settings.max_agent_steps, settings.max_tool_calls) + 1) * 2 + 1
 
         try:
             result = utility_graph.invoke(

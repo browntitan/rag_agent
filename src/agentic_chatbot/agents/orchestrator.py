@@ -29,6 +29,22 @@ from agentic_chatbot.agents.session import ChatSession
 logger = logging.getLogger(__name__)
 
 
+def _is_graph_capability_error(exc: Exception) -> bool:
+    """Return True when falling back to the legacy agent is expected/safe."""
+    text = str(exc).lower()
+    capability_markers = (
+        "bind_tools",
+        "tool calling",
+        "tool-calling",
+        "does not support tool",
+        "not implemented",
+        "unsupported",
+    )
+    if any(m in text for m in capability_markers):
+        return True
+    return isinstance(exc, (NotImplementedError, ModuleNotFoundError, ImportError))
+
+
 @dataclass
 class AppContext:
     settings: Settings
@@ -241,7 +257,22 @@ class ChatbotApp:
             return text
 
         # 3) Agent — try multi-agent graph, fall back to single GeneralAgent.
-        text = self._run_multi_agent_graph(session, user_text, callbacks)
+        try:
+            text = self._run_multi_agent_graph(session, user_text, callbacks)
+        except Exception:
+            logger.exception(
+                "Unexpected multi-agent graph failure. "
+                "Not auto-falling back to avoid masking defects."
+            )
+            text = (
+                "I hit an unexpected internal error in the multi-agent graph and stopped this turn. "
+                "Please retry. If the issue persists, check backend logs."
+            )
+            session.messages.append(AIMessage(content=text))
+            if self.ctx.settings.clear_scratchpad_per_turn:
+                session.clear_scratchpad()
+            return text
+
         if text is None:
             text = self._run_general_agent_fallback(session, user_text, callbacks)
 
@@ -303,11 +334,14 @@ class ChatbotApp:
             return text or "I wasn't able to produce an answer."
 
         except Exception as e:
-            logger.warning(
-                "Multi-agent graph failed, falling back to GeneralAgent: %s", e,
-                exc_info=True,
-            )
-            return None
+            if _is_graph_capability_error(e):
+                logger.warning(
+                    "Multi-agent graph unavailable due to capability/config issue; "
+                    "falling back to GeneralAgent: %s", e,
+                    exc_info=True,
+                )
+                return None
+            raise
 
     def _run_general_agent_fallback(
         self,

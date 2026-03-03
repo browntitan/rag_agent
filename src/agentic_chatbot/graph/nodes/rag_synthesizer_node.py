@@ -33,6 +33,7 @@ def make_rag_synthesizer_node(
             logger.warning("RAG synthesizer received no results")
             return {
                 "messages": [AIMessage(content="No results were returned from document search.")],
+                "rag_results": [{"__clear__": True}],
             }
 
         # Single result — pass through without synthesis LLM call
@@ -41,6 +42,7 @@ def make_rag_synthesizer_node(
             rendered = render_rag_contract(contract)
             return {
                 "messages": [AIMessage(content=rendered)],
+                "rag_results": [{"__clear__": True}],
             }
 
         # Multiple results — LLM synthesis
@@ -110,8 +112,9 @@ def make_rag_synthesizer_node(
 
         return {
             "messages": [AIMessage(content=rendered)],
-            # Clear rag_results so next parallel run starts fresh
-            # (we return [] but the reducer sees this as replacing, not adding)
+            # Clear aggregated worker results so follow-up supervisor loops
+            # do not accidentally re-synthesize stale worker outputs.
+            "rag_results": [{"__clear__": True}],
         }
 
     return rag_synthesizer_node

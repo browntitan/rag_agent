@@ -1,6 +1,6 @@
 # Agentic RAG Chatbot v2
 
-A production-grade document intelligence chatbot built on LangChain. It combines a rule-based router, a general-purpose tool-calling agent, and a loop-based specialist RAG agent backed by PostgreSQL with pgvector. The system can reason across multiple documents, extract and compare clauses, identify requirements, and produce grounded answers with inline citations.
+A production-grade document intelligence chatbot built on LangChain/LangGraph. It combines a deterministic router, a multi-agent supervisor graph (RAG + utility specialists), and a legacy single-agent fallback path, all backed by PostgreSQL + pgvector. The system can reason across multiple documents, extract and compare clauses, identify requirements, and produce grounded answers with inline citations.
 
 ---
 
@@ -57,61 +57,35 @@ This chatbot answers questions by autonomously deciding whether a query needs do
 ## 2. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          User Input                             │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-                    ┌───────────▼───────────┐
-                    │  Deterministic Router  │
-                    │  (no LLM, pure regex)  │
-                    └──────┬────────┬────────┘
-                           │        │
-                    BASIC  │        │ AGENT
-                           │        │
-              ┌────────────▼┐      ┌▼────────────────────────────┐
-              │  Basic Chat  │      │     General Agent (loop)    │
-              │  (LLM only,  │      │  system prompt from         │
-              │   no tools)  │      │  data/skills/general_agent  │
-              └─────────────┘      └──┬──────────────────────────┘
-                                      │ tools available:
-                                      ├── calculator
-                                      ├── list_indexed_docs
-                                      ├── memory_save / memory_load / memory_list
-                                      └── rag_agent_tool ──────────────────────┐
-                                                                                │
-                                                              ┌─────────────────▼──────────────────┐
-                                                              │       RAG Agent (loop)             │
-                                                              │  system prompt from                │
-                                                              │  data/skills/rag_agent.md          │
-                                                              │                                    │
-                                                              │  11 specialist tools:              │
-                                                              │  resolve_document                  │
-                                                              │  search_document                   │
-                                                              │  search_all_documents              │
-                                                              │  extract_clauses                   │
-                                                              │  list_document_structure           │
-                                                              │  extract_requirements              │
-                                                              │  compare_clauses                   │
-                                                              │  diff_documents                    │
-                                                              │  scratchpad_write/read/list        │
-                                                              └──────────────┬─────────────────────┘
-                                                                             │
-                                                             ┌───────────────▼────────────────┐
-                                                             │         PostgreSQL              │
-                                                             │  ┌──────────────────────────┐  │
-                                                             │  │ documents table           │  │
-                                                             │  │ (title, type, hash, ...)  │  │
-                                                             │  ├──────────────────────────┤  │
-                                                             │  │ chunks table              │  │
-                                                             │  │ embedding vector(768)     │  │
-                                                             │  │ ts tsvector (FTS)         │  │
-                                                             │  │ clause_number, chunk_type │  │
-                                                             │  ├──────────────────────────┤  │
-                                                             │  │ memory table              │  │
-                                                             │  │ (session_id, key, value)  │  │
-                                                             │  └──────────────────────────┘  │
-                                                             │  Extensions: pgvector, pg_trgm  │
-                                                             └────────────────────────────────┘
+User Input
+   │
+   ▼
+Orchestrator (ChatbotApp.process_turn)
+   │
+   ▼
+Deterministic Router (BASIC | AGENT)
+   │
+   ├─ BASIC -> Basic Chat (LLM only, no tools)
+   │
+   └─ AGENT (primary) -> Multi-Agent Supervisor Graph
+                        ├─ supervisor -> rag_agent -> supervisor
+                        ├─ supervisor -> utility_agent -> supervisor
+                        ├─ supervisor -> parallel_planner
+                        │              -> rag_worker x N
+                        │              -> rag_synthesizer
+                        │              -> supervisor
+                        └─ supervisor -> __end__
+
+AGENT fallback (capability/config issue):
+   -> GeneralAgent (legacy) with tools:
+      calculator, list_indexed_docs, memory_*, rag_agent_tool
+
+Upload path:
+   ingest_paths() -> direct run_rag_agent() summary kickoff
+
+Storage:
+   PostgreSQL + pgvector + pg_trgm
+   tables: documents, chunks, memory
 ```
 
 ---
@@ -273,6 +247,7 @@ Commands:
   init-kb        Force (re)indexing of the built-in demo KB.
   migrate        Apply the database schema (idempotent).
   reset-indexes  Truncate all indexed data from PostgreSQL.
+  demo           Run curated multi-turn demo scenarios.
 ```
 
 ---
@@ -288,13 +263,22 @@ cp .env.example .env
 Open `.env` and set at minimum:
 
 ```env
+# ── Backends (current + future-ready switches) ───────────────────
+DATABASE_BACKEND=postgres
+VECTOR_STORE_BACKEND=pgvector
+OBJECT_STORE_BACKEND=local
+SKILLS_BACKEND=local
+PROMPTS_BACKEND=local
+
 # ── Provider (choose one) ─────────────────────────────────────────
 LLM_PROVIDER=ollama
+JUDGE_PROVIDER=ollama
 EMBEDDINGS_PROVIDER=ollama
 
 # ── Ollama ────────────────────────────────────────────────────────
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_CHAT_MODEL=llama3.1:8b        # or whichever model you pulled
+OLLAMA_JUDGE_MODEL=llama3.1:8b
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
 # ── Database ──────────────────────────────────────────────────────
@@ -306,12 +290,14 @@ EMBEDDING_DIM=768                     # must match the embed model output
 
 ```env
 LLM_PROVIDER=azure
+JUDGE_PROVIDER=azure
 EMBEDDINGS_PROVIDER=azure
 
 AZURE_OPENAI_API_KEY=<your-key>
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2024-05-01-preview
 AZURE_OPENAI_DEPLOYMENT=gpt-4o           # chat deployment name
+AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o-mini
 AZURE_OPENAI_EMBED_DEPLOYMENT=text-embedding-ada-002
 
 # Azure ada-002 embeddings output 1536 dims — must update this:
@@ -319,6 +305,28 @@ EMBEDDING_DIM=1536
 ```
 
 > **Important:** If you change `EMBEDDING_DIM`, you must also edit `src/agentic_chatbot/db/schema.sql` and change `vector(768)` to `vector(1536)` before running `migrate`. If you have existing data, run `reset-indexes --yes` first.
+
+### 6.3 Skills and Prompt Template Paths
+
+All system prompts and judge/synthesis prompt templates are path-configurable:
+
+```env
+SKILLS_DIR=./data/skills
+PROMPTS_DIR=./data/prompts
+
+SHARED_SKILLS_PATH=./data/skills/skills.md
+GENERAL_AGENT_SKILLS_PATH=./data/skills/general_agent.md
+RAG_AGENT_SKILLS_PATH=./data/skills/rag_agent.md
+SUPERVISOR_AGENT_SKILLS_PATH=./data/skills/supervisor_agent.md
+UTILITY_AGENT_SKILLS_PATH=./data/skills/utility_agent.md
+BASIC_CHAT_SKILLS_PATH=./data/skills/basic_chat.md
+
+JUDGE_GRADING_PROMPT_PATH=./data/prompts/judge_grading.txt
+JUDGE_REWRITE_PROMPT_PATH=./data/prompts/judge_rewrite.txt
+GROUNDED_ANSWER_PROMPT_PATH=./data/prompts/grounded_answer.txt
+RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/rag_synthesis.txt
+PARALLEL_RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/parallel_rag_synthesis.txt
+```
 
 ---
 
@@ -343,6 +351,28 @@ This command is idempotent — safe to run multiple times. It will not delete ex
 | `memory` table | Table | Cross-turn session memory |
 | HNSW index | Index | Fast approximate nearest-neighbour search on embeddings |
 | GIN index | Index | Full-text search on chunk content |
+
+### 7.1 Backend Bootstrap Checklist (End-to-End)
+
+Run these in order on a fresh setup:
+
+```bash
+# 1) start PostgreSQL (pgvector image) and Ollama/Azure config
+# 2) install deps and create .env
+
+python run.py migrate
+python run.py init-kb
+
+# sanity check: single question
+python run.py ask -q "What authentication methods does the API support?"
+
+# interactive backend
+python run.py chat
+
+# curated demo suite
+python run.py demo --list-scenarios
+python run.py demo --scenario all --max-turns 2
+```
 
 ---
 
@@ -372,6 +402,14 @@ python run.py chat
 
 Type your question at the `You>` prompt. Use `/upload PATH` to ingest a document mid-conversation, or `/exit` to quit.
 
+### 8.4 Run Curated Demo Scenarios
+
+```bash
+python run.py demo --list-scenarios
+python run.py demo --scenario kb_grounded_qa
+python run.py demo --scenario all --max-turns 2
+```
+
 ---
 
 ## 9. CLI Reference
@@ -386,7 +424,7 @@ python run.py ask [OPTIONS]
 |---|---|
 | `-q TEXT` / `--question TEXT` | The question to ask (required) |
 | `-u PATH` / `--upload PATH` | File to ingest before asking (repeatable) |
-| `--force-agent` | Skip router, go straight to GeneralAgent |
+| `--force-agent` | Skip router and force AGENT path (supervisor graph; fallback to legacy GeneralAgent if needed) |
 | `--dotenv PATH` | Load a specific `.env` file |
 
 **Examples:**
@@ -466,6 +504,32 @@ python run.py reset-indexes [--yes] [--dotenv PATH]
 | `--yes` / `-y` | Skip the confirmation prompt |
 
 **Warning:** This truncates the `documents`, `chunks`, and `memory` tables. All indexed content and session memory is permanently deleted. Run `init-kb` or `chat` to rebuild.
+
+---
+
+### `demo` — Run Curated Demo Scenarios
+
+```bash
+python run.py demo [OPTIONS]
+```
+
+| Option | Description |
+|---|---|
+| `-s TEXT` / `--scenario TEXT` | Scenario name or `all` (default: `all`) |
+| `--list-scenarios` | List available scenarios and exit |
+| `--max-turns INT` | Max prompts per scenario (`0` = all) |
+| `--force-agent` | Force AGENT path for all demo prompts |
+| `-u PATH` / `--upload PATH` | Ingest file(s) before demo starts |
+| `--continue-on-error / --stop-on-error` | Continue or abort on first failing prompt |
+| `--dotenv PATH` | Load a specific `.env` file |
+
+Examples:
+
+```bash
+python run.py demo --list-scenarios
+python run.py demo --scenario utility_and_memory
+python run.py demo --scenario all --max-turns 2
+```
 
 ---
 
@@ -603,9 +667,9 @@ START → supervisor ──→ rag_agent ──→ supervisor (loop)
 
 **Utility Agent** (`graph/nodes/utility_node.py`): A `create_react_agent` subgraph with `calculator`, `list_indexed_docs`, and `memory_*` tools.
 
-**Parallel RAG** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. Results are merged by `rag_synthesizer` using an `operator.add` reducer.
+**Parallel RAG** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. Results are merged by `rag_synthesizer` through a reducer that supports parallel append plus explicit post-synthesis clearing.
 
-**Fallback**: If the graph fails to build (e.g., LLM doesn't support tool calling), the orchestrator automatically falls back to the old single-agent path (`run_general_agent` with `rag_agent_tool`).
+**Fallback**: If the graph cannot run due capability/config limitations (for example tool-calling incompatibility), the orchestrator falls back to the legacy single-agent path (`run_general_agent` with `rag_agent_tool`). Unexpected graph runtime errors are surfaced explicitly instead of silently masking defects.
 
 ### 12.1 Request Routing
 
@@ -624,9 +688,9 @@ BASIC route:
   - everything else (general knowledge, small talk)
 ```
 
-### 12.2 GeneralAgent
+### 12.2 GeneralAgent (Legacy Fallback Path)
 
-The GeneralAgent is powered by **LangGraph `create_react_agent`** — a compiled `StateGraph` that implements the ReAct (Reason + Act) pattern as a directed graph of nodes:
+The GeneralAgent is powered by **LangGraph `create_react_agent`** and is used as the legacy fallback path.
 
 ```
 ┌──────────────────┐   tool_calls   ┌────────────────────┐
@@ -648,13 +712,13 @@ The GeneralAgent is powered by **LangGraph `create_react_agent`** — a compiled
 
 **Budget control:** The recursion limit is computed as `(max(MAX_AGENT_STEPS, MAX_TOOL_CALLS) + 1) × 2 + 1`. This accounts for 2 graph node visits per ReAct cycle (agent + tools) plus a buffer. When the limit is hit, `GraphRecursionError` is caught and a graceful partial response is returned.
 
-**Available tools:** `calculator`, `list_indexed_docs`, `memory_save`, `memory_load`, `memory_list`, `rag_agent_tool`
+**Available tools:** `calculator`, `list_indexed_docs`, `memory_save`, `memory_load`, `memory_list`, `rag_agent_tool`.
 
 **Fallback:** If the LLM does not support `bind_tools()`, a plan-execute fallback generates a JSON plan, executes tools sequentially, and synthesises a final answer. This path does not use LangGraph.
 
 ### 12.3 RAGAgent
 
-The RAGAgent is also powered by **LangGraph `create_react_agent`**, activated when `rag_agent_tool` is called by the GeneralAgent. It operates as an autonomous specialist loop with 11 dedicated tools:
+The RAGAgent is powered by **LangGraph `create_react_agent`** and is primarily invoked as a specialist node in the multi-agent graph (`rag_agent`, `rag_worker`). It is also invoked through `rag_agent_tool` in the legacy fallback path. It operates as an autonomous specialist loop with 11 dedicated tools:
 
 | Tool | Purpose |
 |---|---|
@@ -675,7 +739,7 @@ The RAGAgent is also powered by **LangGraph `create_react_agent`**, activated wh
 2. A task message containing the `QUERY`, `PREFERRED_DOC_IDS`, and strategy hints is passed as a `HumanMessage`
 3. LangGraph runs the same ReAct loop — tool calls → tool results → tool calls — until the agent has sufficient evidence
 4. A **final synthesis call** asks the LLM to produce the RAG contract JSON from all accumulated tool results
-5. The structured contract dict is returned to the GeneralAgent
+5. The structured contract dict is returned to the caller (graph node or `rag_agent_tool`)
 
 **Budget control:** Uses formula `(MAX_RAG_AGENT_STEPS + MAX_TOOL_CALLS + 1) × 2 + 1` for the recursion limit. On budget exhaustion, synthesis proceeds with whatever evidence was collected before the limit.
 
@@ -805,8 +869,8 @@ CREATE TABLE memory (
 
 When Langfuse keys are configured, every turn emits traces including:
 - Router decision and confidence score
-- GeneralAgent: each LLM call, tool call, and result
-- RAGAgent: each tool call, retrieved chunks, and synthesis call
+- Supervisor graph nodes: routing loops, utility agent runs, RAG node/worker runs, and synthesis steps
+- GeneralAgent fallback path (when used): each LLM call, tool call, and result
 - Upload ingestion events
 
 Access the Langfuse dashboard at `http://localhost:3000` (if running locally).
@@ -824,17 +888,12 @@ User: "What are the differences between termset_v1 and termset_v2
 1. Orchestrator.process_turn()
    → route_message() → AGENT (tool_or_multistep_intent)
 
-2. GeneralAgent loop:
-   → LLM sees system prompt (general_agent.md) + user question
-   → LLM calls: rag_agent_tool(
-       query="differences in clauses 10-15 between termset_v1 and termset_v2",
-       preferred_doc_ids_csv=""
-     )
+2. Supervisor graph:
+   → supervisor routes to `parallel_rag` (comparison intent)
+   → parallel_planner normalizes sub-tasks
+   → rag_worker x N executes `run_rag_agent()` in parallel doc scopes
 
-3. rag_agent_tool → run_rag_agent()
-   → RAGAgent loop begins with rag_agent.md system prompt
-
-4. RAGAgent tool calls (automated, no user input):
+3. RAGAgent tool calls per worker (automated, no user input):
    a. resolve_document("termset_v1") → {"doc_id": "kb_abc123", "title": "termset_v1.pdf"}
    b. resolve_document("termset_v2") → {"doc_id": "kb_def456", "title": "termset_v2.pdf"}
    c. diff_documents("kb_abc123", "kb_def456")
@@ -843,15 +902,13 @@ User: "What are the differences between termset_v1 and termset_v2
    e. compare_clauses("kb_abc123", "kb_def456", ["10","11","12","13","14","15"])
       → side-by-side text for each clause
 
-5. RAGAgent synthesises:
-   → Final answer with inline citations (doc_id#chunk_id)
-   → Returns structured contract dict
+4. rag_synthesizer merges worker outputs
+   → consolidated answer + citation list
 
-6. GeneralAgent receives contract dict:
-   → Formats answer cleanly (strips raw JSON)
-   → Presents answer + citations to user
+5. supervisor routes to `__end__`
+   → final answer returned to user
 
-7. session.clear_scratchpad() (if CLEAR_SCRATCHPAD_PER_TURN=true)
+6. session.clear_scratchpad() (if CLEAR_SCRATCHPAD_PER_TURN=true)
 ```
 
 ---
@@ -1047,10 +1104,17 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
+| `DATABASE_BACKEND` | `postgres` | Yes | Database backend (currently: `postgres`) |
+| `VECTOR_STORE_BACKEND` | `pgvector` | Yes | Vector backend (currently: `pgvector`) |
+| `OBJECT_STORE_BACKEND` | `local` | No | Object/doc source backend (`local`, `s3`, `azure_blob`; local implemented) |
+| `SKILLS_BACKEND` | `local` | No | Skills prompt backend (`local`, `s3`, `azure_blob`; local implemented) |
+| `PROMPTS_BACKEND` | `local` | No | Prompt-template backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `LLM_PROVIDER` | `ollama` | Yes | `ollama` or `azure` |
+| `JUDGE_PROVIDER` | same as `LLM_PROVIDER` | No | Provider used for grading/judge LLM |
 | `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
 | `OLLAMA_CHAT_MODEL` | `gpt-oss:20b` | If Ollama | Chat model name |
+| `OLLAMA_JUDGE_MODEL` | same as `OLLAMA_CHAT_MODEL` | No | Judge model name for Ollama |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
 | `OLLAMA_NUM_PREDICT` | `512` | No | Max output tokens |
@@ -1058,8 +1122,10 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `AZURE_OPENAI_ENDPOINT` | — | If Azure | Azure resource endpoint |
 | `AZURE_OPENAI_API_VERSION` | `2024-05-01-preview` | If Azure | Azure API version |
 | `AZURE_OPENAI_DEPLOYMENT` | — | If Azure | Chat deployment name |
+| `AZURE_OPENAI_JUDGE_DEPLOYMENT` | same as `AZURE_OPENAI_DEPLOYMENT` | No | Judge deployment name |
 | `AZURE_OPENAI_EMBED_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
 | `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
+| `JUDGE_TEMPERATURE` | `0.0` | No | Judge-model temperature |
 | `PG_DSN` | `postgresql://localhost:5432/ragdb` | Yes | PostgreSQL connection string |
 | `EMBEDDING_DIM` | `768` | Yes | Must match embed model output |
 | `MAX_AGENT_STEPS` | `10` | No | GeneralAgent max loop iterations |
@@ -1067,15 +1133,31 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `MAX_RAG_AGENT_STEPS` | `8` | No | RAGAgent max tool calls |
 | `RAG_TOPK_VECTOR` | `12` | No | Chunks returned from vector search |
 | `RAG_TOPK_BM25` | `12` | No | Chunks returned from keyword search |
-| `RAG_MAX_RETRIES` | `2` | No | RAG query retry limit |
-| `RAG_MIN_EVIDENCE_CHUNKS` | `2` | No | Minimum chunks required before answering |
+| `RAG_MAX_RETRIES` | `2` | No | Accepted for compatibility (currently not wired into active runtime flow) |
+| `RAG_MIN_EVIDENCE_CHUNKS` | `2` | No | Reserved config (currently not enforced in active runtime flow) |
 | `SUPERVISOR_MAX_LOOPS` | `5` | No | Max supervisor routing loops per turn |
 | `MAX_PARALLEL_RAG_WORKERS` | `4` | No | Max parallel RAG workers for document comparison |
 | `ENABLE_PARALLEL_RAG` | `true` | No | Enable parallel RAG via Send API |
 | `CHUNK_SIZE` | `900` | No | Characters per chunk |
 | `CHUNK_OVERLAP` | `150` | No | Character overlap between chunks |
+| `DATA_DIR` | `./data` | No | Base data directory |
 | `KB_DIR` | `./data/kb` | No | Knowledge base directory |
 | `UPLOADS_DIR` | `./data/uploads` | No | User uploads directory |
+| `KB_SOURCE_URI` | `file://./data/kb` | No | Knowledge base source URI (future remote support) |
+| `UPLOADS_SOURCE_URI` | `file://./data/uploads` | No | Upload source URI (future remote support) |
+| `SKILLS_DIR` | `./data/skills` | No | Skills directory root |
+| `PROMPTS_DIR` | `./data/prompts` | No | Prompt-template directory root |
+| `SHARED_SKILLS_PATH` | `./data/skills/skills.md` | No | Shared skills markdown path |
+| `GENERAL_AGENT_SKILLS_PATH` | `./data/skills/general_agent.md` | No | General-agent skills path |
+| `RAG_AGENT_SKILLS_PATH` | `./data/skills/rag_agent.md` | No | RAG-agent skills path |
+| `SUPERVISOR_AGENT_SKILLS_PATH` | `./data/skills/supervisor_agent.md` | No | Supervisor-agent skills path |
+| `UTILITY_AGENT_SKILLS_PATH` | `./data/skills/utility_agent.md` | No | Utility-agent skills path |
+| `BASIC_CHAT_SKILLS_PATH` | `./data/skills/basic_chat.md` | No | Basic-chat skills path |
+| `JUDGE_GRADING_PROMPT_PATH` | `./data/prompts/judge_grading.txt` | No | Grading prompt template path |
+| `JUDGE_REWRITE_PROMPT_PATH` | `./data/prompts/judge_rewrite.txt` | No | Query-rewrite prompt template path |
+| `GROUNDED_ANSWER_PROMPT_PATH` | `./data/prompts/grounded_answer.txt` | No | Grounded-answer prompt template path |
+| `RAG_SYNTHESIS_PROMPT_PATH` | `./data/prompts/rag_synthesis.txt` | No | RAG synthesis prompt template path |
+| `PARALLEL_RAG_SYNTHESIS_PROMPT_PATH` | `./data/prompts/parallel_rag_synthesis.txt` | No | Parallel-RAG synthesis prompt template path |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
 | `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
 | `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
@@ -1118,11 +1200,19 @@ langchain_agentic_chatbot_v2/
 │   │   ├── supervisor_agent.md    # Supervisor routing rules (multi-agent graph)
 │   │   ├── utility_agent.md       # Utility agent instructions
 │   │   └── basic_chat.md          # (optional) Dedicated BasicChat prompt
+│   ├── prompts/                   # Judge/synthesis prompt templates (path-configurable)
+│   │   ├── judge_grading.txt
+│   │   ├── judge_rewrite.txt
+│   │   ├── grounded_answer.txt
+│   │   ├── rag_synthesis.txt
+│   │   └── parallel_rag_synthesis.txt
+│   ├── demo/                      # Curated demo scenario definitions
+│   │   └── demo_scenarios.json
 │   └── uploads/                   # Runtime upload directory
 │
 ├── docs/                          # Additional architecture and design docs
 │   ├── ARCHITECTURE.md            # System architecture, LangGraph flows, design decisions
-│   ├── PATTERNS.md                # 11 agentic patterns implemented + summary table
+│   ├── PATTERNS.md                # Agentic patterns implemented + summary table
 │   ├── RAG_AGENT_DESIGN.md        # RAGAgent loop design, all 11 tools, output contract
 │   ├── TOOLS_AND_TOOL_CALLING.md  # Tool design principles, LangGraph loop, all tool schemas
 │   ├── RAG_TOOL_CONTRACT.md       # Full rag_agent_tool output schema specification
@@ -1133,8 +1223,9 @@ langchain_agentic_chatbot_v2/
 │   └── COMPOSITION.md             # How the system components compose together
 │
 └── src/agentic_chatbot/
-    ├── cli.py                     # Typer CLI (ask, chat, migrate, init-kb, reset-indexes)
+    ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes)
     ├── config.py                  # Settings dataclass + load_settings() from env
+    ├── prompting.py               # Prompt template loading + token replacement
     │
     ├── agents/
     │   ├── orchestrator.py        # ChatbotApp — top-level router + multi-agent graph coordinator

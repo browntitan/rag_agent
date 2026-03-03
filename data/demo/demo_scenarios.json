@@ -1,0 +1,27 @@
+{
+  "router_and_basic": [
+    "What is fan-out vs fan-in in agentic systems?",
+    "Give a concise explanation of retrieval-augmented generation.",
+    "When should I choose keyword search over vector search?"
+  ],
+  "utility_and_memory": [
+    "What is 18% of 2400?",
+    "Remember that preferred_jurisdiction is England and Wales.",
+    "What value is saved under preferred_jurisdiction?",
+    "List all memory keys I have stored so far."
+  ],
+  "kb_grounded_qa": [
+    "According to runbook_incident_response.md, what is the update cadence during SEV-1 incidents? Cite sources.",
+    "From api_rate_limits.md, what are the API rate limits? Include citations.",
+    "What retention policy is described in 03_security_and_privacy.md? Cite evidence."
+  ],
+  "cross_document_comparison": [
+    "Compare api_auth.md and api_examples.md and highlight practical auth-flow differences with citations.",
+    "Compare runbook_incident_response.md and runbook_oncall_handover.md: where do responsibilities overlap?"
+  ],
+  "requirements_and_extraction": [
+    "In 04_integrations_and_tools.md, extract requirement-like statements and list them with citations.",
+    "List constraints and limits mentioned in 02_pricing_and_plans.md with citations.",
+    "From 05_release_notes.md, extract changes that could impact tool-calling behavior."
+  ]
+}

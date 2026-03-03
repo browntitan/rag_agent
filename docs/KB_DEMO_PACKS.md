@@ -56,3 +56,17 @@ Then ask:
 
 - "Summarize the uploaded doc and list open questions."
 - "Extract all key requirements and constraints with citations."
+
+## Demo runner
+
+You can run curated multi-turn demos from the CLI:
+
+```bash
+python run.py demo --list-scenarios
+python run.py demo --scenario kb_grounded_qa
+python run.py demo --scenario all --max-turns 2
+```
+
+Scenario definitions live in:
+
+- `data/demo/demo_scenarios.json`

@@ -1,13 +1,13 @@
 """Shared state schema for the multi-agent LangGraph.
 
-AgentState flows through every node in the graph.  The ``messages`` key
+AgentState flows through every node in the graph. The ``messages`` key
 uses the built-in ``add_messages`` reducer so messages are appended, never
-overwritten.  The ``rag_results`` key uses ``operator.add`` so parallel
-RAG workers can independently append their results.
+overwritten. ``rag_results`` uses a custom reducer that supports both:
+1) parallel append from workers, and
+2) explicit clear after synthesis.
 """
 from __future__ import annotations
 
-import operator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Dict, List
 
@@ -22,6 +22,23 @@ class RAGResult:
     doc_scope: List[str]
     contract: Dict[str, Any]
     worker_id: str = ""
+
+
+def merge_rag_results(
+    current: List[Dict[str, Any]] | None,
+    new: List[Dict[str, Any]] | None,
+) -> List[Dict[str, Any]]:
+    """Reducer for rag_results with support for explicit clear markers.
+
+    Workers append normal result dicts. The synthesizer can clear prior results
+    by emitting a marker item: ``{"__clear__": True}``.
+    """
+    cur = list(current or [])
+    nxt = list(new or [])
+    has_clear = any(isinstance(item, dict) and item.get("__clear__") for item in nxt)
+    if has_clear:
+        return [item for item in nxt if not (isinstance(item, dict) and item.get("__clear__"))]
+    return cur + nxt
 
 
 class AgentState(MessagesState):
@@ -44,8 +61,8 @@ class AgentState(MessagesState):
     # Parallel RAG planner populates these before Send fan-out
     rag_sub_tasks: List[Dict[str, Any]] = []
 
-    # Parallel RAG workers append here (operator.add concatenates)
-    rag_results: Annotated[List[Dict[str, Any]], operator.add] = []
+    # Parallel RAG workers append here; synthesizer clears via {"__clear__": True}.
+    rag_results: Annotated[List[Dict[str, Any]], merge_rag_results] = []
 
     # Final output text
     final_answer: str = ""

@@ -28,7 +28,7 @@ AGENT route (primary)
      -> parallel_planner -> rag_worker x N -> rag_synthesizer
      -> __end__
 
-AGENT fallback (if graph build/invoke fails)
+AGENT fallback (capability/config issue only)
   -> GeneralAgent (create_react_agent)
   -> tools: calculator, list_indexed_docs, memory_*, rag_agent_tool
 
@@ -146,7 +146,8 @@ Hot-reload behavior:
 
 ### Multi-agent graph fallback
 
-If graph build/invoke fails, orchestrator logs warning and runs legacy `GeneralAgent`.
+If graph execution fails due capability/config incompatibility (for example tool-calling support), orchestrator logs warning and runs legacy `GeneralAgent`.
+Unexpected graph runtime errors are surfaced explicitly instead of silently masking defects.
 
 ### Tool-calling fallback inside agents
 
