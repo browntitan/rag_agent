@@ -120,12 +120,14 @@ Quick start:
 ```bash
 cp .env.example .env
 
-# Full local stack: app + pgvector + Ollama
+# Full local stack: app gateway + pgvector + Ollama
 docker compose --profile ollama up -d --build
 
 # Optional observability stack (Langfuse + deps)
 docker compose --profile ollama --profile observability up -d --build
 ```
+
+This works even if PostgreSQL is not installed on your machine; `rag-postgres` runs inside Docker and the app connects to it automatically.
 
 If using local Ollama, pull models once:
 
@@ -134,7 +136,7 @@ docker compose exec ollama ollama pull nomic-embed-text
 docker compose exec ollama ollama pull gpt-oss:20b
 ```
 
-Then run backend commands inside the app container:
+The app container now starts the OpenAI-compatible gateway on boot (`http://localhost:8000`). You can still run CLI commands inside the app container:
 
 ```bash
 # schema migration + KB indexing
@@ -183,6 +185,12 @@ The application will create its own tables via the `migrate` command — no manu
 **Connection string** for your `.env`:
 ```
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+```
+
+If you run the app itself via Docker Compose, this host-based `PG_DSN` is overridden internally to:
+
+```env
+postgresql://raguser:ragpass@rag-postgres:5432/ragdb
 ```
 
 ### 4.2 Ollama (Required if not using Azure)
@@ -266,7 +274,9 @@ docker compose restart app
 
 ### 4.4 OpenAI-Compatible Agent Gateway
 
-Run the gateway locally:
+If you started Docker Compose, the gateway is already running on `http://localhost:8000`.
+
+To run on host instead:
 
 ```bash
 python run.py serve-api --host 0.0.0.0 --port 8000
@@ -280,26 +290,25 @@ Endpoint summary:
 
 The gateway is designed so OpenWebUI and AI SDK can target it as an OpenAI-compatible backend by changing base URL and credentials.
 
+In simplified mode, the gateway has no built-in auth. For production, place it behind a trusted network boundary or upstream proxy/API gateway.
+
 OpenWebUI wiring:
 
 1. Provider type: OpenAI-compatible.
 2. Base URL: `http://<gateway-host>:8000/v1`.
 3. Model: `enterprise-agent` (or `GATEWAY_MODEL_ID`).
-4. Ensure your deployment forwards `Authorization` (Bearer JWT) and optionally `X-Conversation-ID`.
+4. Optionally set `X-Conversation-ID` for stable chat thread memory scope.
 
 AI SDK wiring:
 
 1. Point your provider/base URL to `http://<gateway-host>:8000/v1`.
 2. Use model `enterprise-agent`.
-3. Pass headers:
-   - `Authorization: Bearer <jwt>`
-   - `X-Conversation-ID: <stable-chat-id>` (recommended).
+3. Optionally pass `X-Conversation-ID: <stable-chat-id>` for stable chat thread memory scope.
 
 Example request:
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
   -H "X-Conversation-ID: demo-chat-001" \
   -d '{
@@ -397,6 +406,8 @@ OLLAMA_EMBED_MODEL=nomic-embed-text
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
 EMBEDDING_DIM=768                     # must match the embed model output
 ```
+
+If you run backend commands in the `app` container, Compose injects an internal `PG_DSN` to the `rag-postgres` service automatically.
 
 ### 6.2 Using Azure OpenAI Instead of Ollama
 
@@ -667,8 +678,6 @@ This starts a FastAPI server exposing:
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/ingest/documents`
-
-JWT auth is required for `/v1/*` endpoints (`Authorization: Bearer <token>`).
 
 ---
 
@@ -1312,9 +1321,6 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `DEFAULT_USER_ID` | `local-cli` | No | Default user for CLI/demo/local runs |
 | `DEFAULT_CONVERSATION_ID` | `local-session` | No | Default conversation scope for CLI/demo/local runs |
 | `GATEWAY_MODEL_ID` | `enterprise-agent` | No | Public model ID exposed by `/v1/models` |
-| `JWT_SECRET_KEY` | — | If API auth enabled | HMAC secret used to verify Bearer JWTs in gateway |
-| `JWT_ALGORITHM` | `HS256` | No | JWT algorithm used by gateway verifier |
-| `RATE_LIMIT_PER_MINUTE` | `120` | No | In-memory gateway limit per tenant+user key |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
 | `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
 | `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
@@ -1397,10 +1403,10 @@ langchain_agentic_chatbot_v2/
 └── src/agentic_chatbot/
     ├── api/
     │   ├── __init__.py            # FastAPI gateway package export
-    │   └── main.py                # OpenAI-compatible /v1 endpoints + JWT auth
+    │   └── main.py                # OpenAI-compatible /v1 endpoints (no in-app auth)
     ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes, serve-api)
     ├── config.py                  # Settings dataclass + load_settings() from env
-    ├── context.py                 # RequestContext + local/JWT context resolvers
+    ├── context.py                 # RequestContext + local default context resolver
     ├── prompting.py               # Prompt template loading + token replacement
     │
     ├── agents/

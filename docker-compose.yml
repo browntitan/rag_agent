@@ -3,7 +3,6 @@ name: agentic-rag
 services:
   rag-postgres:
     image: pgvector/pgvector:pg16
-    container_name: rag-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${RAG_DB_NAME:-ragdb}
@@ -21,7 +20,6 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
     profiles: ["ollama"]
     restart: unless-stopped
     ports:
@@ -33,7 +31,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: agentic-app
     restart: unless-stopped
     depends_on:
       rag-postgres:
@@ -53,13 +50,17 @@ services:
       - ./:/app
     ports:
       - "${APP_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     tty: true
     stdin_open: true
-    command: ["sleep", "infinity"]
+    command: ["python", "run.py", "serve-api", "--host", "0.0.0.0", "--port", "8000"]
 
   langfuse-postgres:
     image: postgres:17
-    container_name: langfuse-postgres
     profiles: ["observability"]
     restart: unless-stopped
     environment:
@@ -76,7 +77,6 @@ services:
 
   langfuse-redis:
     image: redis:7
-    container_name: langfuse-redis
     profiles: ["observability"]
     restart: unless-stopped
     command: >
@@ -89,7 +89,6 @@ services:
 
   langfuse-clickhouse:
     image: clickhouse/clickhouse-server
-    container_name: langfuse-clickhouse
     profiles: ["observability"]
     restart: unless-stopped
     environment:
@@ -107,7 +106,6 @@ services:
 
   langfuse-minio:
     image: minio/minio
-    container_name: langfuse-minio
     profiles: ["observability"]
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -127,7 +125,6 @@ services:
 
   langfuse-minio-create-bucket:
     image: minio/mc
-    container_name: langfuse-minio-create-bucket
     profiles: ["observability"]
     depends_on:
       langfuse-minio:
@@ -143,7 +140,6 @@ services:
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
-    container_name: langfuse-worker
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:
@@ -189,7 +185,6 @@ services:
 
   langfuse-web:
     image: langfuse/langfuse:3
-    container_name: langfuse-web
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:

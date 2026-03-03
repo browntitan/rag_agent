@@ -6,11 +6,9 @@ import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional
 
-import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -18,7 +16,7 @@ from pydantic import BaseModel, Field
 from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot.config import Settings, load_settings
-from agentic_chatbot.context import RequestContext, build_context_from_claims
+from agentic_chatbot.context import RequestContext, build_local_context
 from agentic_chatbot.providers import build_providers
 from agentic_chatbot.rag import ingest_paths
 
@@ -49,27 +47,6 @@ class Runtime:
     def __init__(self, settings: Settings, bot: ChatbotApp):
         self.settings = settings
         self.bot = bot
-
-
-class _RateLimiter:
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._buckets: Dict[str, List[float]] = {}
-
-    def allow(self, key: str, *, limit: int, now_ts: float) -> bool:
-        window_start = now_ts - 60.0
-        with self._lock:
-            arr = self._buckets.get(key, [])
-            arr = [t for t in arr if t >= window_start]
-            if len(arr) >= max(1, limit):
-                self._buckets[key] = arr
-                return False
-            arr.append(now_ts)
-            self._buckets[key] = arr
-            return True
-
-
-_rate_limiter = _RateLimiter()
 
 
 @lru_cache(maxsize=1)
@@ -212,65 +189,16 @@ def _stream_chat_chunks(model: str, text: str) -> Iterable[str]:
     yield "data: [DONE]\n\n"
 
 
-def _decode_bearer_token(authorization: str, settings: Settings) -> Dict[str, Any]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Bearer token")
-
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Bearer token")
-
-    if not settings.jwt_secret_key:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="JWT_SECRET_KEY is not configured")
-
-    try:
-        claims = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm],
-            options={"verify_aud": False},
-        )
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}") from exc
-
-    if not isinstance(claims, dict):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token claims")
-
-    return claims
-
-
 def get_request_context(
-    request: ChatCompletionsRequest,
     runtime: Runtime,
-    authorization: str,
     conversation_id: Optional[str],
     request_id: Optional[str],
 ) -> RequestContext:
-    claims = _decode_bearer_token(authorization, runtime.settings)
-    try:
-        return build_context_from_claims(
-            runtime.settings,
-            claims,
-            conversation_id=conversation_id or request.user or runtime.settings.default_conversation_id,
-            request_id=request_id or "",
-            fallback_user_id=request.user,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-
-
-def _enforce_rate_limit(ctx: RequestContext, runtime: Runtime) -> None:
-    key = f"{ctx.tenant_id}:{ctx.user_id}"
-    allowed = _rate_limiter.allow(
-        key,
-        limit=runtime.settings.rate_limit_per_minute,
-        now_ts=time.time(),
+    return build_local_context(
+        runtime.settings,
+        conversation_id=conversation_id or runtime.settings.default_conversation_id,
+        request_id=request_id or "",
     )
-    if not allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Please retry shortly.",
-        )
 
 
 app = FastAPI(title="Agentic Gateway", version="1.0.0")
@@ -289,9 +217,7 @@ def health_ready(runtime: Runtime = Depends(get_runtime)) -> Dict[str, str]:
 @app.get("/v1/models")
 def list_models(
     settings: Settings = Depends(get_settings),
-    authorization: str = Header(..., alias="Authorization"),
 ) -> Dict[str, Any]:
-    _decode_bearer_token(authorization, settings)
     model_id = settings.gateway_model_id
     return {
         "object": "list",
@@ -310,7 +236,6 @@ def list_models(
 def chat_completions(
     request: ChatCompletionsRequest,
     runtime: Runtime = Depends(get_runtime),
-    authorization: str = Header(..., alias="Authorization"),
     x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
     x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
 ):
@@ -318,13 +243,10 @@ def chat_completions(
         raise HTTPException(status_code=400, detail=f"Unsupported model: {request.model}")
 
     ctx = get_request_context(
-        request,
         runtime,
-        authorization=authorization,
         conversation_id=x_conversation_id,
         request_id=x_request_id,
     )
-    _enforce_rate_limit(ctx, runtime)
     logger.info(
         "chat_completions request tenant=%s user=%s conversation=%s request_id=%s model=%s stream=%s",
         ctx.tenant_id,
@@ -359,23 +281,14 @@ def chat_completions(
 def ingest_documents(
     request: IngestDocumentsRequest,
     runtime: Runtime = Depends(get_runtime),
-    authorization: str = Header(..., alias="Authorization"),
     x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
     x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
 ) -> Dict[str, Any]:
-    # Build a minimal context using default/fallback user scope for ingestion routes.
-    claims = _decode_bearer_token(authorization, runtime.settings)
-    try:
-        ctx = build_context_from_claims(
-            runtime.settings,
-            claims,
-            conversation_id=x_conversation_id or runtime.settings.default_conversation_id,
-            request_id=x_request_id or "",
-            fallback_user_id=runtime.settings.default_user_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-    _enforce_rate_limit(ctx, runtime)
+    ctx = get_request_context(
+        runtime,
+        conversation_id=x_conversation_id,
+        request_id=x_request_id,
+    )
     logger.info(
         "ingest_documents request tenant=%s user=%s conversation=%s request_id=%s source_type=%s files=%d",
         ctx.tenant_id,

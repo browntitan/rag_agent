@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Optional
 
 from agentic_chatbot.config import Settings
 
@@ -32,30 +32,5 @@ def build_local_context(
         tenant_id=settings.default_tenant_id,
         user_id=settings.default_user_id,
         conversation_id=conversation_id or settings.default_conversation_id,
-        request_id=request_id,
-    )
-
-
-def build_context_from_claims(
-    settings: Settings,
-    claims: Mapping[str, object],
-    *,
-    conversation_id: Optional[str] = None,
-    request_id: str = "",
-    fallback_user_id: Optional[str] = None,
-) -> RequestContext:
-    """Create RequestContext from JWT claims and request metadata."""
-    tenant_id = str(claims.get("tenant_id") or "").strip()
-    user_id = str(claims.get("sub") or fallback_user_id or "").strip()
-
-    if not tenant_id:
-        raise ValueError("JWT is missing required claim: tenant_id")
-    if not user_id:
-        raise ValueError("JWT is missing required claim: sub")
-
-    return RequestContext(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        conversation_id=(conversation_id or "default").strip() or "default",
         request_id=request_id,
     )

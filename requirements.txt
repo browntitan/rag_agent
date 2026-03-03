@@ -35,4 +35,3 @@ rich>=13.0.0
 # API gateway
 fastapi>=0.115.0
 uvicorn>=0.30.0
-PyJWT>=2.9.0

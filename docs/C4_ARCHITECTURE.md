@@ -16,6 +16,7 @@ Verification baseline:
 - Runtime interfaces are:
   - CLI (`python run.py ...`)
   - FastAPI gateway (`python run.py serve-api`) exposing OpenAI-compatible `/v1` endpoints.
+- In simplified mode, the gateway does not enforce in-app authentication.
 - The AGENT path is supervisor-graph first, with a legacy single-agent fallback only for capability/config issues.
 - Langfuse is optional and enabled only when keys are configured.
 

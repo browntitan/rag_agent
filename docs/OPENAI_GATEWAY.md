@@ -14,30 +14,23 @@ This project now includes a FastAPI gateway that exposes OpenAI-compatible endpo
 python run.py serve-api --host 0.0.0.0 --port 8000
 ```
 
-## Auth
+If you use Docker Compose, the `app` service now starts this gateway automatically.
 
-All `/v1/*` endpoints require:
+## Authentication
 
-```http
-Authorization: Bearer <JWT>
-```
+The simplified gateway mode has no built-in auth on `/v1/*`.
 
-Required JWT claims:
+For production, protect it upstream using one of:
 
-- `sub` (user id)
-- `tenant_id`
-
-Configured via:
-
-- `JWT_SECRET_KEY`
-- `JWT_ALGORITHM` (default `HS256`)
-- `RATE_LIMIT_PER_MINUTE` (default `120`, key: `tenant_id:user_id`)
+- reverse proxy auth (for example Nginx/Traefik/OAuth2 proxy),
+- API gateway auth/policies,
+- private network-only exposure.
 
 ## OpenWebUI integration
 
 1. Add a new OpenAI-compatible provider.
 2. Set Base URL to `http://<gateway-host>:8000/v1`.
-3. Use any API key value in UI; actual auth is your Bearer JWT at the gateway/proxy layer.
+3. Use any API key value in UI if required by the client.
 4. Select model ID `enterprise-agent` (or `GATEWAY_MODEL_ID`).
 
 ## AI SDK integration (Vercel)
@@ -46,7 +39,7 @@ Point your chat route to the gateway's OpenAI-compatible endpoint.
 
 - Base URL: `http://<gateway-host>:8000/v1`
 - Model: `enterprise-agent`
-- Headers: pass Bearer JWT and optional `X-Conversation-ID`
+- Headers: optional `X-Conversation-ID`
 
 ## Notes
 

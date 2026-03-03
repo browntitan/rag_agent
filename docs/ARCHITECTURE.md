@@ -43,6 +43,10 @@ OpenAI-compatible HTTP gateway (optional)
   -> FastAPI /v1/chat/completions
   -> maps OpenAI messages to ChatSession history + user turn
   -> process_turn(...)
+
+Gateway auth mode:
+  -> no in-app auth in simplified mode
+  -> secure via network/proxy layer when needed
 ```
 
 ---

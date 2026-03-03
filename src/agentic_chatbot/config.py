@@ -109,9 +109,6 @@ class Settings:
 
     # --- OpenAI-compatible gateway ---
     gateway_model_id: str
-    jwt_secret_key: str | None
-    jwt_algorithm: str
-    rate_limit_per_minute: int
 
 
 def _getenv(name: str, default: str | None = None) -> str | None:
@@ -246,11 +243,8 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     default_user_id = str(_getenv("DEFAULT_USER_ID", "local-cli"))
     default_conversation_id = str(_getenv("DEFAULT_CONVERSATION_ID", "local-session"))
 
-    # Gateway auth/model config
+    # Gateway model config
     gateway_model_id = str(_getenv("GATEWAY_MODEL_ID", "enterprise-agent"))
-    jwt_secret_key = _getenv("JWT_SECRET_KEY")
-    jwt_algorithm = str(_getenv("JWT_ALGORITHM", "HS256"))
-    rate_limit_per_minute = _as_int("RATE_LIMIT_PER_MINUTE", 120)
 
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
@@ -337,7 +331,4 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         default_user_id=default_user_id,
         default_conversation_id=default_conversation_id,
         gateway_model_id=gateway_model_id,
-        jwt_secret_key=jwt_secret_key,
-        jwt_algorithm=jwt_algorithm,
-        rate_limit_per_minute=rate_limit_per_minute,
     )
