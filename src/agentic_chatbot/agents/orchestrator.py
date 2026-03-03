@@ -13,6 +13,7 @@ from agentic_chatbot.observability import get_langchain_callbacks
 from agentic_chatbot.providers import ProviderBundle
 from agentic_chatbot.rag import (
     KnowledgeStores,
+    load_basic_chat_skills,
     ensure_kb_indexed,
     ingest_paths,
     load_general_agent_skills,
@@ -42,6 +43,7 @@ class ChatbotApp:
         self.ctx = ctx
         # Load system prompts from skills files once at startup.
         self._general_agent_system_prompt = load_general_agent_skills(ctx.settings)
+        self._basic_chat_system_prompt = load_basic_chat_skills(ctx.settings)
         # Ensure KB is indexed once at startup.
         ensure_kb_indexed(self.ctx.settings, self.ctx.stores)
 
@@ -230,7 +232,7 @@ class ChatbotApp:
                 self.ctx.providers.chat,
                 messages=session.messages,
                 user_text=user_text,
-                system_prompt=self._general_agent_system_prompt,
+                system_prompt=self._basic_chat_system_prompt,
                 callbacks=callbacks,
             )
             session.messages.append(AIMessage(content=text))

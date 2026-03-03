@@ -177,6 +177,12 @@ def ingest_paths(
     Skips files that have already been ingested with the same content hash.
     Returns the list of newly ingested doc_ids.
     """
+    if settings.object_store_backend != "local":
+        raise NotImplementedError(
+            f"OBJECT_STORE_BACKEND={settings.object_store_backend!r} is not implemented for ingest yet. "
+            "Set OBJECT_STORE_BACKEND=local for now."
+        )
+
     ingested_doc_ids: List[str] = []
 
     for p in paths:
@@ -238,6 +244,11 @@ def ingest_paths(
 
 def ensure_kb_indexed(settings: Settings, stores: KnowledgeStores) -> None:
     """Index the built-in KB documents if the documents table is empty for source_type='kb'."""
+    if settings.object_store_backend != "local":
+        raise NotImplementedError(
+            f"OBJECT_STORE_BACKEND={settings.object_store_backend!r} is not implemented for KB indexing yet. "
+            "Set OBJECT_STORE_BACKEND=local for now."
+        )
     kb_docs = stores.doc_store.list_documents(source_type="kb")
     if kb_docs:
         return

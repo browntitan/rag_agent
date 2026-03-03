@@ -10,6 +10,7 @@ from typing import Any, List
 
 from langchain.tools import tool
 
+from agentic_chatbot.config import Settings
 from agentic_chatbot.rag.stores import KnowledgeStores
 
 
@@ -45,6 +46,8 @@ def _chunk_to_dict(ch: Any) -> dict:
 def make_all_rag_tools(
     stores: KnowledgeStores,
     session: Any,   # ChatSession — imported lazily to avoid circular imports
+    *,
+    settings: Settings | None = None,
 ) -> List[Any]:
     """Return all 11 RAG specialist tools bound to stores and session.
 
@@ -52,6 +55,8 @@ def make_all_rag_tools(
         stores:  KnowledgeStores with chunk_store, doc_store, memory_store.
         session: ChatSession — provides session.scratchpad dict.
     """
+    top_k_vector = max(1, int(getattr(settings, "rag_top_k_vector", 8)))
+    top_k_keyword = max(1, int(getattr(settings, "rag_top_k_keyword", 8)))
 
     # ------------------------------------------------------------------ #
     #  1. resolve_document                                                 #
@@ -131,10 +136,18 @@ def make_all_rag_tools(
         """
         results = []
         if strategy in ("vector", "hybrid"):
-            v_hits = stores.chunk_store.vector_search(query, top_k=8, doc_id_filter=doc_id)
+            v_hits = stores.chunk_store.vector_search(
+                query,
+                top_k=top_k_vector,
+                doc_id_filter=doc_id,
+            )
             results.extend(v_hits)
         if strategy in ("keyword", "hybrid"):
-            k_hits = stores.chunk_store.keyword_search(query, top_k=8, doc_id_filter=doc_id)
+            k_hits = stores.chunk_store.keyword_search(
+                query,
+                top_k=top_k_keyword,
+                doc_id_filter=doc_id,
+            )
             results.extend(k_hits)
 
         # Deduplicate
@@ -147,7 +160,8 @@ def make_all_rag_tools(
                 unique.append(r)
 
         unique.sort(key=lambda x: x.score, reverse=True)
-        return json.dumps([_chunk_to_dict(r) for r in unique[:12]])
+        max_out = min(50, top_k_vector + top_k_keyword)
+        return json.dumps([_chunk_to_dict(r) for r in unique[:max_out]])
 
     # ------------------------------------------------------------------ #
     #  3. search_all_documents                                             #
@@ -164,9 +178,9 @@ def make_all_rag_tools(
         """
         results = []
         if strategy in ("vector", "hybrid"):
-            results.extend(stores.chunk_store.vector_search(query, top_k=12))
+            results.extend(stores.chunk_store.vector_search(query, top_k=top_k_vector))
         if strategy in ("keyword", "hybrid"):
-            results.extend(stores.chunk_store.keyword_search(query, top_k=12))
+            results.extend(stores.chunk_store.keyword_search(query, top_k=top_k_keyword))
 
         seen_ids: set = set()
         unique = []
@@ -177,7 +191,8 @@ def make_all_rag_tools(
                 unique.append(r)
 
         unique.sort(key=lambda x: x.score, reverse=True)
-        return json.dumps([_chunk_to_dict(r) for r in unique[:15]])
+        max_out = min(80, top_k_vector + top_k_keyword)
+        return json.dumps([_chunk_to_dict(r) for r in unique[:max_out]])
 
     # ------------------------------------------------------------------ #
     #  4. extract_clauses                                                  #

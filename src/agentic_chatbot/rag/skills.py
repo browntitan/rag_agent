@@ -78,6 +78,12 @@ _DEFAULT_UTILITY_SYSTEM = (
     "Always use the calculator for math. Always call memory_load to recall facts.\n"
 )
 
+_DEFAULT_BASIC_CHAT_SYSTEM = (
+    "You are a helpful assistant. "
+    "Answer the user's question directly and concisely. "
+    "If you are unsure, say so and suggest what information would help."
+)
+
 
 # ---------------------------------------------------------------------------
 # Loader helpers
@@ -96,7 +102,12 @@ def _load_md(path: Path) -> Optional[str]:
 
 def load_shared_skills(settings: Settings) -> str:
     """Load data/skills/skills.md. Returns empty string if file is absent."""
-    path = settings.data_dir / "skills" / "skills.md"
+    if settings.skills_backend != "local":
+        raise NotImplementedError(
+            f"SKILLS_BACKEND={settings.skills_backend!r} is not implemented yet. "
+            "Set SKILLS_BACKEND=local for now."
+        )
+    path = settings.shared_skills_path
     return _load_md(path) or _DEFAULT_SHARED
 
 
@@ -110,7 +121,7 @@ def load_general_agent_skills(settings: Settings) -> str:
     Falls back to hard-coded defaults if files are missing.
     """
     shared = load_shared_skills(settings)
-    specific = _load_md(settings.data_dir / "skills" / "general_agent.md")
+    specific = _load_md(settings.general_agent_skills_path)
     body = specific or _DEFAULT_GENERAL_SYSTEM
     if shared:
         return f"{shared}\n\n---\n\n{body}".strip()
@@ -127,7 +138,7 @@ def load_rag_agent_skills(settings: Settings) -> str:
     Falls back to hard-coded defaults if files are missing.
     """
     shared = load_shared_skills(settings)
-    specific = _load_md(settings.data_dir / "skills" / "rag_agent.md")
+    specific = _load_md(settings.rag_agent_skills_path)
     body = specific or _DEFAULT_RAG_SYSTEM
     if shared:
         return f"{shared}\n\n---\n\n{body}".strip()
@@ -144,7 +155,7 @@ def load_supervisor_skills(settings: Settings) -> str:
     Falls back to hard-coded defaults if files are missing.
     """
     shared = load_shared_skills(settings)
-    specific = _load_md(settings.data_dir / "skills" / "supervisor_agent.md")
+    specific = _load_md(settings.supervisor_agent_skills_path)
     body = specific or _DEFAULT_SUPERVISOR_SYSTEM
     if shared:
         return f"{shared}\n\n---\n\n{body}".strip()
@@ -161,8 +172,22 @@ def load_utility_agent_skills(settings: Settings) -> str:
     Falls back to hard-coded defaults if files are missing.
     """
     shared = load_shared_skills(settings)
-    specific = _load_md(settings.data_dir / "skills" / "utility_agent.md")
+    specific = _load_md(settings.utility_agent_skills_path)
     body = specific or _DEFAULT_UTILITY_SYSTEM
+    if shared:
+        return f"{shared}\n\n---\n\n{body}".strip()
+    return body.strip()
+
+
+def load_basic_chat_skills(settings: Settings) -> str:
+    """Return BasicChat system prompt.
+
+    Combines shared preamble + optional data/skills/basic_chat.md.
+    Falls back to a concise hard-coded default.
+    """
+    shared = load_shared_skills(settings)
+    specific = _load_md(settings.basic_chat_skills_path)
+    body = specific or _DEFAULT_BASIC_CHAT_SYSTEM
     if shared:
         return f"{shared}\n\n---\n\n{body}".strip()
     return body.strip()

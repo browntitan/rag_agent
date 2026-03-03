@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from langchain_core.documents import Document
 
+from agentic_chatbot.config import Settings
+from agentic_chatbot.prompting import load_judge_grading_prompt, render_template
 from agentic_chatbot.utils.json_utils import extract_json, coerce_int
 
 
@@ -32,6 +34,7 @@ def _heuristic_relevance(question: str, text: str) -> int:
 def grade_chunks(
     judge_llm: Any,
     *,
+    settings: Settings,
     question: str,
     chunks: Sequence[Document],
     max_chunks: int = 12,
@@ -54,17 +57,13 @@ def grade_chunks(
             snippet = snippet[:800] + "..."
         items.append({"chunk_id": str(cid), "title": str(title), "location": str(location), "text": snippet})
 
-    prompt = (
-        "You are a retrieval relevance grader.\n"
-        "Given a QUESTION and a list of CHUNKS, assign each chunk a relevance score:\n"
-        "3 = directly answers the question or contains key required facts\n"
-        "2 = partially relevant / useful supporting information\n"
-        "1 = tangentially related\n"
-        "0 = not relevant\n\n"
-        "Return ONLY valid JSON in this exact schema:\n"
-        "{\"grades\": [{\"chunk_id\": \"...\", \"relevance\": 0, \"reason\": \"...\"}, ...]}\n\n"
-        f"QUESTION: {question}\n\n"
-        f"CHUNKS: {items}"
+    template = load_judge_grading_prompt(settings)
+    prompt = render_template(
+        template,
+        {
+            "QUESTION": question,
+            "CHUNKS_JSON": items,
+        },
     )
 
     callbacks = callbacks or []

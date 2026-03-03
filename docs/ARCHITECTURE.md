@@ -122,8 +122,7 @@ Prompt behavior is loaded from `data/skills/*.md` through `rag/skills.py`.
 Hot-reload behavior:
 
 - RAG/supervisor/utility prompts are loaded when those nodes are built
-- general agent prompt is loaded once in orchestrator init
-- `data/skills/basic_chat.md` exists but is not currently loaded by code paths
+- general agent and basic-chat prompts are loaded once in orchestrator init
 
 ---
 

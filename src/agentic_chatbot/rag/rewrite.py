@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentic_chatbot.config import Settings
+from agentic_chatbot.prompting import DEFAULT_JUDGE_REWRITE_PROMPT, load_judge_rewrite_prompt, render_template
 from agentic_chatbot.utils.json_utils import extract_json
 
 
 def rewrite_query(
     judge_llm: Any,
     *,
+    settings: Settings | None = None,
     question: str,
     conversation_context: str,
     attempt: int,
@@ -15,16 +18,14 @@ def rewrite_query(
 ) -> str:
     """Rewrite the query to improve retrieval."""
 
-    prompt = (
-        "You are a query rewriting assistant for retrieval.\n"
-        "Rewrite the QUESTION into a better search query.\n"
-        "- Prefer concrete nouns and key terms\n"
-        "- Include synonyms if helpful\n"
-        "- Remove filler words\n"
-        "Return ONLY valid JSON: {\"rewritten_query\": \"...\"}.\n\n"
-        f"ATTEMPT: {attempt}\n"
-        f"QUESTION: {question}\n"
-        f"CONVERSATION_CONTEXT: {conversation_context}\n"
+    template = load_judge_rewrite_prompt(settings) if settings is not None else DEFAULT_JUDGE_REWRITE_PROMPT
+    prompt = render_template(
+        template,
+        {
+            "ATTEMPT": attempt,
+            "QUESTION": question,
+            "CONVERSATION_CONTEXT": conversation_context,
+        },
     )
 
     callbacks = callbacks or []

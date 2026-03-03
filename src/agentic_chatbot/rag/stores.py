@@ -35,6 +35,17 @@ def load_stores(settings: Settings, embeddings: object) -> KnowledgeStores:
     """
     from agentic_chatbot.db.connection import apply_schema, init_pool
 
+    if settings.database_backend != "postgres":
+        raise NotImplementedError(
+            f"DATABASE_BACKEND={settings.database_backend!r} is not implemented. "
+            "Supported backend today: postgres."
+        )
+    if settings.vector_store_backend != "pgvector":
+        raise NotImplementedError(
+            f"VECTOR_STORE_BACKEND={settings.vector_store_backend!r} is not implemented. "
+            "Supported backend today: pgvector."
+        )
+
     init_pool(settings)
     apply_schema(settings)  # idempotent
 

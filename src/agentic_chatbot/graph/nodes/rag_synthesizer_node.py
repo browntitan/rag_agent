@@ -11,30 +11,17 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, SystemMessage
 
+from agentic_chatbot.config import Settings
+from agentic_chatbot.prompting import load_parallel_rag_synthesis_prompt, render_template
 from agentic_chatbot.graph.nodes.rag_node import render_rag_contract
 from agentic_chatbot.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_SYNTHESIS_PROMPT = """You are merging results from multiple parallel document searches.
-
-Below are the individual results from each worker.  Each worker searched a different
-document or scope.  Your job is to:
-
-1. Combine the findings into a single coherent answer
-2. Preserve ALL citations from every worker (use inline (chunk_id) references)
-3. Highlight differences and similarities between documents
-4. Note any gaps or asymmetries (one doc has content the other doesn't)
-5. Include warnings from any worker
-
-{worker_results}
-
-Produce a clear, structured response that addresses the user's original question.
-Use headings or bullet points to organise cross-document comparisons."""
-
 
 def make_rag_synthesizer_node(
     chat_llm: Any,
+    settings: Settings,
     callbacks: Optional[List[Any]] = None,
 ) -> Callable[[AgentState], Dict[str, Any]]:
     """Create the RAG synthesizer node function."""
@@ -79,7 +66,10 @@ def make_rag_synthesizer_node(
             )
 
         worker_results_text = "\n---\n".join(worker_text_parts)
-        prompt = _SYNTHESIS_PROMPT.format(worker_results=worker_results_text)
+        prompt = render_template(
+            load_parallel_rag_synthesis_prompt(settings),
+            {"WORKER_RESULTS": worker_results_text},
+        )
 
         try:
             resp = chat_llm.invoke(

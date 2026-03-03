@@ -9,14 +9,23 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Settings:
+    # --- Backend selection ---
+    database_backend: str       # postgres
+    vector_store_backend: str   # pgvector
+    object_store_backend: str   # local | s3 | azure_blob (future)
+    skills_backend: str         # local | s3 | azure_blob (future)
+    prompts_backend: str        # local | s3 | azure_blob (future)
+
     # --- Providers ---
     llm_provider: str  # ollama | azure
     embeddings_provider: str  # ollama | azure
+    judge_provider: str  # ollama | azure (defaults to llm_provider)
 
     # --- Ollama ---
     ollama_base_url: str
     ollama_chat_model: str
     ollama_embed_model: str
+    ollama_judge_model: str
     ollama_temperature: float
     ollama_num_predict: int
 
@@ -25,8 +34,10 @@ class Settings:
     azure_openai_endpoint: str | None
     azure_openai_api_version: str | None
     azure_openai_chat_deployment: str | None
+    azure_openai_judge_deployment: str | None
     azure_openai_embed_deployment: str | None
     azure_temperature: float
+    judge_temperature: float
 
     # --- Runtime limits ---
     max_agent_steps: int
@@ -52,6 +63,23 @@ class Settings:
     data_dir: Path
     kb_dir: Path
     uploads_dir: Path
+    kb_source_uri: str
+    uploads_source_uri: str
+
+    # --- Prompt/skills locations ---
+    skills_dir: Path
+    prompts_dir: Path
+    shared_skills_path: Path
+    general_agent_skills_path: Path
+    rag_agent_skills_path: Path
+    supervisor_agent_skills_path: Path
+    utility_agent_skills_path: Path
+    basic_chat_skills_path: Path
+    judge_grading_prompt_path: Path
+    judge_rewrite_prompt_path: Path
+    grounded_answer_prompt_path: Path
+    rag_synthesis_prompt_path: Path
+    parallel_rag_synthesis_prompt_path: Path
 
     # --- Multi-agent graph ---
     supervisor_max_loops: int        # env: SUPERVISOR_MAX_LOOPS (default: 5)
@@ -108,16 +136,26 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
 
     load_dotenv(dotenv_path=dotenv_path)
 
-    project_root = Path(__file__).resolve().parents[3]
-    data_dir = project_root / "data"
+    # config.py -> agentic_chatbot -> src -> repo_root
+    project_root = Path(__file__).resolve().parents[2]
+    data_dir = Path(_getenv("DATA_DIR", str(project_root / "data")))
+
+    # Backends
+    database_backend = str(_getenv("DATABASE_BACKEND", "postgres")).lower()
+    vector_store_backend = str(_getenv("VECTOR_STORE_BACKEND", "pgvector")).lower()
+    object_store_backend = str(_getenv("OBJECT_STORE_BACKEND", "local")).lower()
+    skills_backend = str(_getenv("SKILLS_BACKEND", "local")).lower()
+    prompts_backend = str(_getenv("PROMPTS_BACKEND", "local")).lower()
 
     llm_provider = str(_getenv("LLM_PROVIDER", "ollama")).lower()
     embeddings_provider = str(_getenv("EMBEDDINGS_PROVIDER", llm_provider)).lower()
+    judge_provider = str(_getenv("JUDGE_PROVIDER", llm_provider)).lower()
 
     # Ollama
     ollama_base_url = str(_getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "gpt-oss:20b"))
     ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"))
+    ollama_judge_model = str(_getenv("OLLAMA_JUDGE_MODEL", ollama_chat_model))
     ollama_temperature = _as_float("OLLAMA_TEMPERATURE", 0.2)
     ollama_num_predict = _as_int("OLLAMA_NUM_PREDICT", 512)
 
@@ -126,8 +164,10 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     azure_openai_endpoint = _getenv("AZURE_OPENAI_ENDPOINT")
     azure_openai_api_version = _getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
     azure_openai_chat_deployment = _getenv("AZURE_OPENAI_DEPLOYMENT")
+    azure_openai_judge_deployment = _getenv("AZURE_OPENAI_JUDGE_DEPLOYMENT", azure_openai_chat_deployment)
     azure_openai_embed_deployment = _getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
     azure_temperature = _as_float("AZURE_TEMPERATURE", 0.2)
+    judge_temperature = _as_float("JUDGE_TEMPERATURE", 0.0)
 
     # Runtime
     max_agent_steps = _as_int("MAX_AGENT_STEPS", 10)
@@ -151,6 +191,24 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     # Paths
     kb_dir = Path(_getenv("KB_DIR", str(data_dir / "kb")))
     uploads_dir = Path(_getenv("UPLOADS_DIR", str(data_dir / "uploads")))
+    kb_source_uri = str(_getenv("KB_SOURCE_URI", f"file://{kb_dir}"))
+    uploads_source_uri = str(_getenv("UPLOADS_SOURCE_URI", f"file://{uploads_dir}"))
+
+    skills_dir = Path(_getenv("SKILLS_DIR", str(data_dir / "skills")))
+    prompts_dir = Path(_getenv("PROMPTS_DIR", str(data_dir / "prompts")))
+
+    shared_skills_path = Path(_getenv("SHARED_SKILLS_PATH", str(skills_dir / "skills.md")))
+    general_agent_skills_path = Path(_getenv("GENERAL_AGENT_SKILLS_PATH", str(skills_dir / "general_agent.md")))
+    rag_agent_skills_path = Path(_getenv("RAG_AGENT_SKILLS_PATH", str(skills_dir / "rag_agent.md")))
+    supervisor_agent_skills_path = Path(_getenv("SUPERVISOR_AGENT_SKILLS_PATH", str(skills_dir / "supervisor_agent.md")))
+    utility_agent_skills_path = Path(_getenv("UTILITY_AGENT_SKILLS_PATH", str(skills_dir / "utility_agent.md")))
+    basic_chat_skills_path = Path(_getenv("BASIC_CHAT_SKILLS_PATH", str(skills_dir / "basic_chat.md")))
+
+    judge_grading_prompt_path = Path(_getenv("JUDGE_GRADING_PROMPT_PATH", str(prompts_dir / "judge_grading.txt")))
+    judge_rewrite_prompt_path = Path(_getenv("JUDGE_REWRITE_PROMPT_PATH", str(prompts_dir / "judge_rewrite.txt")))
+    grounded_answer_prompt_path = Path(_getenv("GROUNDED_ANSWER_PROMPT_PATH", str(prompts_dir / "grounded_answer.txt")))
+    rag_synthesis_prompt_path = Path(_getenv("RAG_SYNTHESIS_PROMPT_PATH", str(prompts_dir / "rag_synthesis.txt")))
+    parallel_rag_synthesis_prompt_path = Path(_getenv("PARALLEL_RAG_SYNTHESIS_PROMPT_PATH", str(prompts_dir / "parallel_rag_synthesis.txt")))
 
     # Multi-agent graph
     supervisor_max_loops = _as_int("SUPERVISOR_MAX_LOOPS", 5)
@@ -172,24 +230,45 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     langfuse_secret_key = _getenv("LANGFUSE_SECRET_KEY")
     langfuse_debug = _as_bool("LANGFUSE_DEBUG", False)
 
-    # Ensure base directories exist
-    for p in [data_dir, kb_dir, uploads_dir]:
+    # Ensure backend values are in allowed sets.
+    if database_backend not in {"postgres"}:
+        raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
+    if vector_store_backend not in {"pgvector"}:
+        raise ValueError(f"Unsupported VECTOR_STORE_BACKEND={vector_store_backend!r}. Supported: pgvector")
+    if object_store_backend not in {"local", "s3", "azure_blob"}:
+        raise ValueError(f"Unsupported OBJECT_STORE_BACKEND={object_store_backend!r}. Supported: local, s3, azure_blob")
+    if skills_backend not in {"local", "s3", "azure_blob"}:
+        raise ValueError(f"Unsupported SKILLS_BACKEND={skills_backend!r}. Supported: local, s3, azure_blob")
+    if prompts_backend not in {"local", "s3", "azure_blob"}:
+        raise ValueError(f"Unsupported PROMPTS_BACKEND={prompts_backend!r}. Supported: local, s3, azure_blob")
+
+    # Ensure base local directories exist.
+    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir]:
         p.mkdir(parents=True, exist_ok=True)
 
     return Settings(
+        database_backend=database_backend,
+        vector_store_backend=vector_store_backend,
+        object_store_backend=object_store_backend,
+        skills_backend=skills_backend,
+        prompts_backend=prompts_backend,
         llm_provider=llm_provider,
         embeddings_provider=embeddings_provider,
+        judge_provider=judge_provider,
         ollama_base_url=ollama_base_url,
         ollama_chat_model=ollama_chat_model,
         ollama_embed_model=ollama_embed_model,
+        ollama_judge_model=ollama_judge_model,
         ollama_temperature=ollama_temperature,
         ollama_num_predict=ollama_num_predict,
         azure_openai_api_key=azure_openai_api_key,
         azure_openai_endpoint=azure_openai_endpoint,
         azure_openai_api_version=azure_openai_api_version,
         azure_openai_chat_deployment=azure_openai_chat_deployment,
+        azure_openai_judge_deployment=azure_openai_judge_deployment,
         azure_openai_embed_deployment=azure_openai_embed_deployment,
         azure_temperature=azure_temperature,
+        judge_temperature=judge_temperature,
         max_agent_steps=max_agent_steps,
         max_tool_calls=max_tool_calls,
         rag_top_k_vector=rag_top_k_vector,
@@ -205,6 +284,21 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         data_dir=data_dir,
         kb_dir=kb_dir,
         uploads_dir=uploads_dir,
+        kb_source_uri=kb_source_uri,
+        uploads_source_uri=uploads_source_uri,
+        skills_dir=skills_dir,
+        prompts_dir=prompts_dir,
+        shared_skills_path=shared_skills_path,
+        general_agent_skills_path=general_agent_skills_path,
+        rag_agent_skills_path=rag_agent_skills_path,
+        supervisor_agent_skills_path=supervisor_agent_skills_path,
+        utility_agent_skills_path=utility_agent_skills_path,
+        basic_chat_skills_path=basic_chat_skills_path,
+        judge_grading_prompt_path=judge_grading_prompt_path,
+        judge_rewrite_prompt_path=judge_rewrite_prompt_path,
+        grounded_answer_prompt_path=grounded_answer_prompt_path,
+        rag_synthesis_prompt_path=rag_synthesis_prompt_path,
+        parallel_rag_synthesis_prompt_path=parallel_rag_synthesis_prompt_path,
         supervisor_max_loops=supervisor_max_loops,
         max_parallel_rag_workers=max_parallel_rag_workers,
         enable_parallel_rag=enable_parallel_rag,

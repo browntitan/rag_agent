@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Sequence
 
 from langchain_core.documents import Document
 
+from agentic_chatbot.config import Settings
+from agentic_chatbot.prompting import load_grounded_answer_prompt, render_template
 from agentic_chatbot.utils.json_utils import extract_json, coerce_float
 
 
@@ -47,6 +49,7 @@ def build_citations(docs: Sequence[Document], *, max_snippet_chars: int = 320) -
 def generate_grounded_answer(
     llm: Any,
     *,
+    settings: Settings,
     question: str,
     conversation_context: str,
     evidence_docs: Sequence[Document],
@@ -79,18 +82,13 @@ def generate_grounded_answer(
             }
         )
 
-    prompt = (
-        "You are a grounded QA assistant.\n"
-        "Answer the QUESTION using ONLY the EVIDENCE snippets provided.\n"
-        "Rules:\n"
-        "- If a claim depends on evidence, cite it inline using (citation_id).\n"
-        "- If evidence is insufficient, say what is missing and ask a clarifying question.\n"
-        "- Do NOT fabricate document details.\n\n"
-        "Return ONLY valid JSON in this schema:\n"
-        "{\"answer\": \"...\", \"used_citation_ids\": [""], \"followups\": [""], \"warnings\": [""], \"confidence_hint\": 0.0}\n\n"
-        f"QUESTION: {question}\n"
-        f"CONVERSATION_CONTEXT: {conversation_context}\n\n"
-        f"EVIDENCE: {evidence_pack}"
+    prompt = render_template(
+        load_grounded_answer_prompt(settings),
+        {
+            "QUESTION": question,
+            "CONVERSATION_CONTEXT": conversation_context,
+            "EVIDENCE_JSON": evidence_pack,
+        },
     )
 
     callbacks = callbacks or []

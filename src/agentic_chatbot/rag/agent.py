@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agentic_chatbot.config import Settings
+from agentic_chatbot.prompting import load_rag_synthesis_prompt, render_template
 from agentic_chatbot.rag.answer import build_citations, generate_grounded_answer
 from agentic_chatbot.rag.stores import KnowledgeStores
 
@@ -70,7 +71,7 @@ def run_rag_agent(
     # ------------------------------------------------------------------
     # 2. Build tools
     # ------------------------------------------------------------------
-    rag_tools = make_all_rag_tools(stores, session)
+    rag_tools = make_all_rag_tools(stores, session, settings=settings)
 
     try:
         llm_with_tools = llm.bind_tools(rag_tools)
@@ -156,32 +157,33 @@ def run_rag_agent(
             top_k_keyword=top_k_keyword,
         )
         docs = [sc.doc for sc in retrieval.get("merged", [])]
-        graded = grade_chunks(judge_llm, question=query, chunks=docs, max_chunks=12, callbacks=callbacks)
+        graded = grade_chunks(
+            judge_llm,
+            settings=settings,
+            question=query,
+            chunks=docs,
+            max_chunks=12,
+            callbacks=callbacks,
+        )
         fallback_docs = [g.doc for g in graded if g.relevance >= 2]
 
         citations = build_citations(fallback_docs)
         answer_bundle = generate_grounded_answer(
             llm, question=query,
             conversation_context=conversation_context,
-            evidence_docs=fallback_docs, max_evidence=8, callbacks=callbacks,
+            evidence_docs=fallback_docs,
+            max_evidence=8,
+            settings=settings,
+            callbacks=callbacks,
         )
         return _build_contract(answer_bundle, citations, query, warnings)
 
     # ------------------------------------------------------------------
     # 5. Final synthesis — ask the LLM to produce the RAG contract JSON
     # ------------------------------------------------------------------
-    synthesis_prompt = (
-        "Based on all the tool results above, produce your final answer.\n"
-        "Return ONLY valid JSON in this exact schema:\n"
-        '{"answer": "...", "used_citation_ids": ["..."], '
-        '"followups": ["..."], "warnings": ["..."], "confidence_hint": 0.0}\n\n'
-        "Rules:\n"
-        "- answer: comprehensive, cite inline using (citation_id) from chunk_ids you retrieved.\n"
-        "- used_citation_ids: list of chunk_ids actually cited in the answer.\n"
-        "- followups: 2-3 suggested next questions.\n"
-        "- warnings: list any missing information or uncertainty.\n"
-        "- confidence_hint: float 0.0-1.0 reflecting your confidence.\n"
-        f"\nOriginal query: {query}"
+    synthesis_prompt = render_template(
+        load_rag_synthesis_prompt(settings),
+        {"ORIGINAL_QUERY": query},
     )
     msgs.append(HumanMessage(content=synthesis_prompt))
 

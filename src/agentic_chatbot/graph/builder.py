@@ -91,7 +91,7 @@ def build_multi_agent_graph(
         settings, stores, chat_llm, judge_llm, callbacks=callbacks,
     )
     rag_synthesizer_fn = make_rag_synthesizer_node(
-        chat_llm, callbacks=callbacks,
+        chat_llm, settings=settings, callbacks=callbacks,
     )
 
     # ── Build the graph ────────────────────────────────────────────────
