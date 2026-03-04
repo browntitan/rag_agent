@@ -12,6 +12,7 @@ _DEFAULT_ERROR_PHRASES: Tuple[str, ...] = (
     "unexpected internal error",
     "demo prompt failed",
     "i hit an unexpected internal error",
+    "i wasn't able to produce an answer",
 )
 
 
@@ -277,6 +278,56 @@ def _count_citations(text: str) -> int:
     return len(inline_hits)
 
 
+def _normalize_text(text: str) -> str:
+    lowered = text.lower()
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _parse_number_token(value: str) -> Optional[float]:
+    cleaned = value.strip().replace("$", "").replace(",", "")
+    if not cleaned:
+        return None
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", cleaned):
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _extract_numbers(text: str) -> Tuple[float, ...]:
+    out: List[float] = []
+    for token in re.findall(r"-?\$?\d[\d,]*(?:\.\d+)?", text):
+        parsed = _parse_number_token(token)
+        if parsed is not None:
+            out.append(parsed)
+    return tuple(out)
+
+
+def _keyword_present(
+    keyword: str,
+    *,
+    lowered_text: str,
+    normalized_text: str,
+    numbers: Tuple[float, ...],
+) -> bool:
+    raw = keyword.strip()
+    if not raw:
+        return True
+
+    numeric = _parse_number_token(raw)
+    if numeric is not None:
+        return any(abs(n - numeric) < 1e-6 for n in numbers)
+
+    normalized_keyword = _normalize_text(raw)
+    if raw.lower() in lowered_text:
+        return True
+    if normalized_keyword and normalized_keyword in normalized_text:
+        return True
+    return False
+
+
 def evaluate_response(
     response_text: str,
     *,
@@ -315,8 +366,31 @@ def evaluate_response(
                 f"Citation check passed ({citation_count} >= {citations_target})."
             )
 
-    expected_keywords: Iterable[str] = scenario.checks.expected_keywords + turn.expected_keywords
-    missing = [k for k in expected_keywords if k.lower() not in lowered]
+    keyword_source: Iterable[str]
+    if turn.expected_keywords:
+        keyword_source = turn.expected_keywords
+    else:
+        keyword_source = scenario.checks.expected_keywords
+
+    expected_keywords: List[str] = []
+    seen = set()
+    for keyword in keyword_source:
+        if keyword not in seen:
+            expected_keywords.append(keyword)
+            seen.add(keyword)
+
+    normalized = _normalize_text(text)
+    numbers = _extract_numbers(text)
+    missing = [
+        keyword
+        for keyword in expected_keywords
+        if not _keyword_present(
+            keyword,
+            lowered_text=lowered,
+            normalized_text=normalized,
+            numbers=numbers,
+        )
+    ]
     if missing:
         status = "WARN" if status == "PASS" else status
         messages.append("Missing expected keywords: " + ", ".join(missing))

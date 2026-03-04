@@ -427,7 +427,8 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_CHAT_MODEL=qwen3:8b           # or whichever model you pulled
 OLLAMA_JUDGE_MODEL=qwen3:8b
 OLLAMA_EMBED_MODEL=nomic-embed-text
-DEMO_OLLAMA_NUM_PREDICT=1024         # demo command only
+OLLAMA_NUM_PREDICT=2048
+DEMO_OLLAMA_NUM_PREDICT=2048         # demo command only
 
 # ── Database ──────────────────────────────────────────────────────
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
@@ -1395,8 +1396,8 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OLLAMA_JUDGE_MODEL` | same as `OLLAMA_CHAT_MODEL` | No | Judge model name for Ollama |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
-| `OLLAMA_NUM_PREDICT` | `512` | No | Max output tokens |
-| `DEMO_OLLAMA_NUM_PREDICT` | `1024` | No | Demo-only max output tokens override (`python run.py demo`) |
+| `OLLAMA_NUM_PREDICT` | `2048` | No | Max output tokens |
+| `DEMO_OLLAMA_NUM_PREDICT` | `2048` | No | Demo-only max output tokens override (`python run.py demo`) |
 | `OLLAMA_GGUF_AUTO_IMPORT` | `false` | No | Enable one-shot GGUF model creation helper in compose |
 | `OLLAMA_GGUF_MODEL_NAME` | — | If auto import | Model name to create with `ollama create` |
 | `OLLAMA_GGUF_MODELFILE` | `/gguf/Modelfile` | If auto import | Modelfile path mounted inside Ollama/importer containers |

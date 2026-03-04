@@ -166,8 +166,8 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"))
     ollama_judge_model = str(_getenv("OLLAMA_JUDGE_MODEL", ollama_chat_model))
     ollama_temperature = _as_float("OLLAMA_TEMPERATURE", 0.2)
-    ollama_num_predict = _as_int("OLLAMA_NUM_PREDICT", 512)
-    demo_ollama_num_predict = _as_int("DEMO_OLLAMA_NUM_PREDICT", max(ollama_num_predict, 1024))
+    ollama_num_predict = _as_int("OLLAMA_NUM_PREDICT", 2048)
+    demo_ollama_num_predict = _as_int("DEMO_OLLAMA_NUM_PREDICT", max(ollama_num_predict, 2048))
 
     # Azure OpenAI (optional)
     azure_openai_api_key = _getenv("AZURE_OPENAI_API_KEY")
