@@ -23,8 +23,10 @@ from agentic_chatbot.demo import (
     render_scenario_summary,
 )
 from agentic_chatbot.providers import (
+    ProviderConfigurationError,
     ProviderDependencyError,
     build_providers,
+    validate_provider_configuration,
     validate_provider_dependencies,
 )
 from agentic_chatbot.agents.orchestrator import ChatbotApp
@@ -111,25 +113,49 @@ def _mask_dsn_password(dsn: str) -> str:
     return urlunsplit((parsed.scheme, f"{masked_userinfo}@{hostinfo}", parsed.path, parsed.query, parsed.fragment))
 
 
-def _exit_provider_dependency_error(exc: ProviderDependencyError) -> None:
-    console.print(Panel(str(exc), title="Provider Dependency Error", border_style="red"))
-    console.print("Run `python run.py doctor` to validate providers, database, and Ollama connectivity.")
+def _read_chunks_embedding_dim(conn) -> Optional[int]:
+    from agentic_chatbot.db.vector_schema import parse_vector_dimension
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod)
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = current_schema()
+              AND c.relname = 'chunks'
+              AND a.attname = 'embedding'
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            """
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return parse_vector_dimension(str(row[0]))
+
+
+def _exit_provider_error(exc: Exception) -> None:
+    title = "Provider Configuration Error" if isinstance(exc, ProviderConfigurationError) else "Provider Dependency Error"
+    console.print(Panel(str(exc), title=title, border_style="red"))
+    console.print("Run `python run.py doctor` to validate providers, database, and connectivity checks.")
     raise typer.Exit(code=2)
 
 
 def _make_app_or_exit(dotenv: Optional[str] = None) -> ChatbotApp:
     try:
         return _make_app(dotenv)
-    except ProviderDependencyError as exc:
-        _exit_provider_dependency_error(exc)
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
+        _exit_provider_error(exc)
         raise
 
 
 def _build_bot_or_exit(settings: Settings) -> ChatbotApp:
     try:
         return _build_bot(settings)
-    except ProviderDependencyError as exc:
-        _exit_provider_dependency_error(exc)
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
+        _exit_provider_error(exc)
         raise
 
 
@@ -262,6 +288,74 @@ def migrate(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
     console.print("Schema applied successfully.")
 
 
+@app.command("migrate-embedding-dim")
+def migrate_embedding_dim(
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+    target_dim: int = typer.Option(0, "--target-dim", help="Target embedding vector dimension (0 uses EMBEDDING_DIM)."),
+    reindex_kb: bool = typer.Option(True, "--reindex-kb/--skip-reindex-kb"),
+    reset_memory: bool = typer.Option(False, "--reset-memory/--keep-memory"),
+    confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+):
+    """Align chunk vector dimension, reset indexed docs/chunks, and optionally reindex KB."""
+
+    settings = load_settings(dotenv)
+    desired_dim = target_dim if target_dim > 0 else settings.embedding_dim
+    if desired_dim <= 0:
+        raise typer.BadParameter("--target-dim must be positive.")
+
+    if not confirm:
+        typer.confirm(
+            "This will clear indexed documents/chunks to rebuild embeddings at the target dimension. Continue?",
+            abort=True,
+        )
+
+    from agentic_chatbot.db.connection import apply_schema, get_conn, init_pool
+    from agentic_chatbot.db.vector_schema import get_chunks_embedding_dim, set_chunks_embedding_dim
+
+    effective_settings = settings if desired_dim == settings.embedding_dim else replace(settings, embedding_dim=desired_dim)
+
+    apply_schema(effective_settings)
+    init_pool(effective_settings)
+    before_dim = get_chunks_embedding_dim()
+    if before_dim is None:
+        console.print(
+            "[red]Unable to detect chunks.embedding dimension. Ensure schema is applied and the chunks table exists.[/red]"
+        )
+        raise typer.Exit(code=1)
+    changed = set_chunks_embedding_dim(desired_dim)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if reset_memory:
+                cur.execute("TRUNCATE TABLE memory, chunks, documents RESTART IDENTITY CASCADE")
+            else:
+                cur.execute("TRUNCATE TABLE chunks, documents RESTART IDENTITY CASCADE")
+        conn.commit()
+
+    # Recreate dropped vector index(es) if the embedding column type was altered.
+    apply_schema(effective_settings)
+
+    after_dim = get_chunks_embedding_dim()
+    console.print(
+        "Embedding schema alignment complete "
+        f"(before={before_dim}, after={after_dim}, schema_changed={'yes' if changed else 'no'})."
+    )
+
+    if desired_dim != settings.embedding_dim:
+        console.print(
+            f"[yellow]Note:[/yellow] Settings currently use EMBEDDING_DIM={settings.embedding_dim}. "
+            f"Update `.env` to EMBEDDING_DIM={desired_dim} before normal runs."
+        )
+
+    if reindex_kb:
+        bot = _build_bot_or_exit(effective_settings)
+        tenant_id = effective_settings.default_tenant_id
+        kb_docs = bot.ctx.stores.doc_store.list_documents(source_type="kb", tenant_id=tenant_id)
+        console.print(f"KB reindex complete. Indexed KB documents: {len(kb_docs)}")
+    else:
+        console.print("Skipped KB reindex (--skip-reindex-kb). Run `python run.py init-kb` when ready.")
+
+
 @app.command()
 def doctor(
     dotenv: Optional[str] = typer.Option(None, "--dotenv"),
@@ -283,14 +377,26 @@ def doctor(
         settings.embeddings_provider.lower(),
     }
     needs_ollama = "ollama" in provider_set
+    needs_azure = "azure" in provider_set
 
     config_lines = [
         f"LLM_PROVIDER={settings.llm_provider}",
         f"JUDGE_PROVIDER={settings.judge_provider}",
         f"EMBEDDINGS_PROVIDER={settings.embeddings_provider}",
-        f"OLLAMA_BASE_URL={settings.ollama_base_url}",
+        f"EMBEDDING_DIM={settings.embedding_dim}",
         f"PG_DSN={_mask_dsn_password(settings.pg_dsn)}",
     ]
+    if needs_ollama:
+        config_lines.append(f"OLLAMA_BASE_URL={settings.ollama_base_url}")
+    if needs_azure:
+        config_lines.extend(
+            [
+                f"AZURE_OPENAI_ENDPOINT={settings.azure_openai_endpoint or '<unset>'}",
+                f"AZURE_OPENAI_CHAT_DEPLOYMENT={settings.azure_openai_chat_deployment or '<unset>'}",
+                f"AZURE_OPENAI_JUDGE_DEPLOYMENT={settings.azure_openai_judge_deployment or '<unset>'}",
+                f"AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT={settings.azure_openai_embed_deployment or '<unset>'}",
+            ]
+        )
     console.print(Panel("\n".join(config_lines), title="Selected Configuration"))
 
     checks: List[DoctorCheckResult] = []
@@ -316,19 +422,68 @@ def doctor(
             )
         )
 
+    config_issues = validate_provider_configuration(settings)
+    if config_issues:
+        details = "; ".join(f"({issue.context}) {issue.message}" for issue in config_issues)
+        remediation = "Fix provider variables in .env (Azure Gov endpoints like https://<resource>.openai.azure.us are supported)."
+        checks.append(
+            DoctorCheckResult(
+                name="Provider runtime configuration",
+                status="FAIL",
+                details=details,
+                remediation=remediation,
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheckResult(
+                name="Provider runtime configuration",
+                status="PASS",
+                details="Provider env/settings are internally consistent.",
+            )
+        )
+
     if check_db:
         try:
             import psycopg2
 
-            conn = psycopg2.connect(dsn=settings.pg_dsn, connect_timeout=max(1, int(timeout_seconds)))
-            conn.close()
-            checks.append(
-                DoctorCheckResult(
-                    name="PostgreSQL connectivity",
-                    status="PASS",
-                    details="Connected to PG_DSN successfully.",
+            with psycopg2.connect(dsn=settings.pg_dsn, connect_timeout=max(1, int(timeout_seconds))) as conn:
+                checks.append(
+                    DoctorCheckResult(
+                        name="PostgreSQL connectivity",
+                        status="PASS",
+                        details="Connected to PG_DSN successfully.",
+                    )
                 )
-            )
+                db_dim = _read_chunks_embedding_dim(conn)
+                if db_dim is None:
+                    checks.append(
+                        DoctorCheckResult(
+                            name="Embedding schema alignment",
+                            status="WARN",
+                            details="Could not detect chunks.embedding dimension (table may not exist yet).",
+                            remediation="Run `python run.py migrate` first, then rerun doctor.",
+                        )
+                    )
+                elif db_dim != settings.embedding_dim:
+                    checks.append(
+                        DoctorCheckResult(
+                            name="Embedding schema alignment",
+                            status="FAIL",
+                            details=(
+                                f"chunks.embedding is vector({db_dim}) but EMBEDDING_DIM={settings.embedding_dim}."
+                            ),
+                            remediation="Run `python run.py migrate-embedding-dim --yes` to realign and rebuild vectors.",
+                        )
+                    )
+                else:
+                    checks.append(
+                        DoctorCheckResult(
+                            name="Embedding schema alignment",
+                            status="PASS",
+                            details=f"chunks.embedding dimension matches settings ({db_dim}).",
+                        )
+                    )
         except Exception as exc:  # pragma: no cover - environment dependent
             checks.append(
                 DoctorCheckResult(
@@ -337,11 +492,25 @@ def doctor(
                     details=str(exc),
                     remediation="Ensure PostgreSQL is running and PG_DSN points to a reachable instance.",
                 )
+                )
+            checks.append(
+                DoctorCheckResult(
+                    name="Embedding schema alignment",
+                    status="SKIP",
+                    details="Skipped because database connectivity failed.",
+                )
             )
     else:
         checks.append(
             DoctorCheckResult(
                 name="PostgreSQL connectivity",
+                status="SKIP",
+                details="Skipped by --skip-db.",
+            )
+        )
+        checks.append(
+            DoctorCheckResult(
+                name="Embedding schema alignment",
                 status="SKIP",
                 details="Skipped by --skip-db.",
             )

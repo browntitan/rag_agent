@@ -38,8 +38,9 @@ CREATE INDEX IF NOT EXISTS documents_tenant_source_idx
 -- ------------------------------------------------------------
 -- chunks: one row per document chunk
 --
--- embedding dimension is set at CREATE time; must match EMBEDDING_DIM env var.
--- To change dimensions you must DROP and recreate this table.
+-- embedding dimension is injected from Settings.EMBEDDING_DIM when schema is applied.
+-- Existing databases may still require `python run.py migrate-embedding-dim --yes`
+-- to realign and reindex.
 --
 -- chunk_type values:
 --   'general'     – plain prose (no detected structure)
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     clause_number  TEXT,          -- e.g. '3', '3.2', '10.1.4'
     section_title  TEXT,          -- heading text extracted from the boundary line
     content        TEXT NOT NULL,
-    embedding      vector(768),   -- CHANGE 768 if EMBEDDING_DIM != 768
+    embedding      vector(__EMBEDDING_DIM__),
     ts             tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
     chunk_type     TEXT DEFAULT 'general'
 );

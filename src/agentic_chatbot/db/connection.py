@@ -57,7 +57,8 @@ def apply_schema(settings: Settings, schema_path: str | None = None) -> None:
     if schema_path is None:
         schema_path = str(pathlib.Path(__file__).parent / "schema.sql")
 
-    sql = pathlib.Path(schema_path).read_text(encoding="utf-8")
+    sql_template = pathlib.Path(schema_path).read_text(encoding="utf-8")
+    sql = sql_template.replace("__EMBEDDING_DIM__", str(int(settings.embedding_dim)))
     init_pool(settings)
     with get_conn() as conn:
         with conn.cursor() as cur:

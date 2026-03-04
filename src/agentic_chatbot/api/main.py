@@ -17,7 +17,11 @@ from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot.config import Settings, load_settings
 from agentic_chatbot.context import RequestContext, build_local_context
-from agentic_chatbot.providers import ProviderDependencyError, build_providers
+from agentic_chatbot.providers import (
+    ProviderConfigurationError,
+    ProviderDependencyError,
+    build_providers,
+)
 from agentic_chatbot.rag import ingest_paths
 
 logger = logging.getLogger(__name__)
@@ -73,9 +77,9 @@ def _get_runtime() -> Runtime:
         providers = build_providers(settings)
         bot = ChatbotApp.create(settings, providers)
         return Runtime(settings=settings, bot=bot)
-    except ProviderDependencyError as exc:
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
         if not _runtime_init_error_logged:
-            logger.error("runtime initialization failed due to provider dependencies: %s", exc)
+            logger.error("runtime initialization failed due to provider validation: %s", exc)
             _runtime_init_error_logged = True
         raise
 
@@ -87,7 +91,7 @@ def get_runtime() -> Runtime:
 def get_runtime_or_503() -> Runtime:
     try:
         return get_runtime()
-    except ProviderDependencyError as exc:
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
