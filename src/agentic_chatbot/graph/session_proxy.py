@@ -19,6 +19,7 @@ class SessionProxy:
 
     session_id: str = ""
     tenant_id: str = "local-dev"
+    demo_mode: bool = False
     scratchpad: Dict[str, str] = field(default_factory=dict)
     uploaded_doc_ids: List[str] = field(default_factory=list)
     # messages is unused by tools but satisfies any hasattr checks

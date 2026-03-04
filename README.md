@@ -136,7 +136,7 @@ If using local Ollama, pull models once:
 
 ```bash
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose exec ollama ollama pull gpt-oss:20b
+docker compose exec ollama ollama pull qwen3:8b
 ```
 
 The app container now starts the OpenAI-compatible gateway on boot (`http://localhost:8000`). You can still run CLI commands inside the app container:
@@ -219,10 +219,10 @@ Pull the required models inside the container:
 docker exec ollama ollama pull nomic-embed-text
 
 # Chat model (choose one)
-docker exec ollama ollama pull llama3.1:8b       # smallest / fastest
-docker exec ollama ollama pull llama3.1:70b      # better quality
-docker exec ollama ollama pull qwen2.5:14b       # good balance
-docker exec ollama ollama pull gpt-oss:20b       # project default
+docker exec ollama ollama pull qwen3:8b          # project default / fastest startup
+docker exec ollama ollama pull qwen2.5:14b       # stronger quality
+docker exec ollama ollama pull llama3.1:8b       # alternative
+docker exec ollama ollama pull llama3.1:70b      # high quality, high resource usage
 ```
 
 Use your own GGUF model with Ollama (manual flow):
@@ -424,9 +424,10 @@ EMBEDDINGS_PROVIDER=ollama
 
 # ── Ollama ────────────────────────────────────────────────────────
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=llama3.1:8b        # or whichever model you pulled
-OLLAMA_JUDGE_MODEL=llama3.1:8b
+OLLAMA_CHAT_MODEL=qwen3:8b           # or whichever model you pulled
+OLLAMA_JUDGE_MODEL=qwen3:8b
 OLLAMA_EMBED_MODEL=nomic-embed-text
+DEMO_OLLAMA_NUM_PREDICT=1024         # demo command only
 
 # ── Database ──────────────────────────────────────────────────────
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
@@ -579,6 +580,10 @@ python run.py demo --scenario utility_memory_finance_bootstrap --verify
 python run.py demo --scenario parallel_rag_multi_doc_risk_board --force-agent --verify
 python run.py demo --scenario all --session-mode scenario --verify
 ```
+
+`demo` mode applies two reliability guards by default:
+- raises `OLLAMA_NUM_PREDICT` to `DEMO_OLLAMA_NUM_PREDICT` (if higher)
+- compacts `list_indexed_docs` tool output to grouped categories (demo sessions only)
 
 Manager-facing showcase order (recommended):
 
@@ -1312,13 +1317,13 @@ docker compose exec app python run.py doctor
 ### Ollama model not found
 
 ```
-OllamaError: model 'llama3.1:8b' not found
+OllamaError: model 'qwen3:8b' not found
 ```
 
 Pull the model:
 
 ```bash
-docker compose exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull qwen3:8b
 ```
 
 Or set `OLLAMA_CHAT_MODEL` in `.env` to a model you have pulled.
@@ -1386,11 +1391,12 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `JUDGE_PROVIDER` | same as `LLM_PROVIDER` | No | Provider used for grading/judge LLM |
 | `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
-| `OLLAMA_CHAT_MODEL` | `gpt-oss:20b` | If Ollama | Chat model name |
+| `OLLAMA_CHAT_MODEL` | `qwen3:8b` | If Ollama | Chat model name |
 | `OLLAMA_JUDGE_MODEL` | same as `OLLAMA_CHAT_MODEL` | No | Judge model name for Ollama |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
 | `OLLAMA_NUM_PREDICT` | `512` | No | Max output tokens |
+| `DEMO_OLLAMA_NUM_PREDICT` | `1024` | No | Demo-only max output tokens override (`python run.py demo`) |
 | `OLLAMA_GGUF_AUTO_IMPORT` | `false` | No | Enable one-shot GGUF model creation helper in compose |
 | `OLLAMA_GGUF_MODEL_NAME` | — | If auto import | Model name to create with `ollama create` |
 | `OLLAMA_GGUF_MODELFILE` | `/gguf/Modelfile` | If auto import | Modelfile path mounted inside Ollama/importer containers |

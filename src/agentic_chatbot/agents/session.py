@@ -18,6 +18,7 @@ class ChatSession:
     messages: List[Any] = field(default_factory=list)
     uploaded_doc_ids: List[str] = field(default_factory=list)
     scratchpad: Dict[str, str] = field(default_factory=dict)
+    demo_mode: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_id:

@@ -70,6 +70,7 @@ def build_multi_agent_graph(
     session_proxy = SessionProxy(
         session_id=session.session_id,
         tenant_id=session.tenant_id,
+        demo_mode=bool(getattr(session, "demo_mode", False)),
         scratchpad=dict(session.scratchpad),
         uploaded_doc_ids=list(session.uploaded_doc_ids),
     )
@@ -191,6 +192,7 @@ def build_initial_state(
         "tenant_id": session.tenant_id,
         "session_id": session.session_id,
         "uploaded_doc_ids": list(session.uploaded_doc_ids),
+        "demo_mode": bool(getattr(session, "demo_mode", False)),
         "scratchpad": dict(session.scratchpad),
         "next_agent": "",
         "rag_sub_tasks": [],

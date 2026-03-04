@@ -28,6 +28,7 @@ class Settings:
     ollama_judge_model: str
     ollama_temperature: float
     ollama_num_predict: int
+    demo_ollama_num_predict: int
 
     # --- Azure OpenAI (optional) ---
     azure_openai_api_key: str | None
@@ -161,11 +162,12 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
 
     # Ollama
     ollama_base_url = str(_getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "gpt-oss:20b"))
+    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "qwen3:8b"))
     ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"))
     ollama_judge_model = str(_getenv("OLLAMA_JUDGE_MODEL", ollama_chat_model))
     ollama_temperature = _as_float("OLLAMA_TEMPERATURE", 0.2)
     ollama_num_predict = _as_int("OLLAMA_NUM_PREDICT", 512)
+    demo_ollama_num_predict = _as_int("DEMO_OLLAMA_NUM_PREDICT", max(ollama_num_predict, 1024))
 
     # Azure OpenAI (optional)
     azure_openai_api_key = _getenv("AZURE_OPENAI_API_KEY")
@@ -277,6 +279,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         ollama_judge_model=ollama_judge_model,
         ollama_temperature=ollama_temperature,
         ollama_num_predict=ollama_num_predict,
+        demo_ollama_num_predict=demo_ollama_num_predict,
         azure_openai_api_key=azure_openai_api_key,
         azure_openai_endpoint=azure_openai_endpoint,
         azure_openai_api_version=azure_openai_api_version,

@@ -52,6 +52,7 @@ class AgentState(MessagesState):
     tenant_id: str = "local-dev"
     session_id: str = ""
     uploaded_doc_ids: List[str] = []
+    demo_mode: bool = False
 
     # Within-turn working memory (no reducer — last-write-wins)
     scratchpad: Dict[str, str] = {}

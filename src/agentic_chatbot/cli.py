@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional
 from urllib.error import URLError
@@ -131,6 +131,15 @@ def _build_bot_or_exit(settings: Settings) -> ChatbotApp:
     except ProviderDependencyError as exc:
         _exit_provider_dependency_error(exc)
         raise
+
+
+def _with_demo_settings(settings: Settings) -> Settings:
+    if settings.llm_provider.lower() != "ollama":
+        return settings
+    target_predict = max(settings.ollama_num_predict, settings.demo_ollama_num_predict)
+    if target_predict == settings.ollama_num_predict:
+        return settings
+    return replace(settings, ollama_num_predict=target_predict)
 
 
 @app.command()
@@ -461,8 +470,16 @@ def demo(
             f"Use --list-scenarios to see valid names."
         )
 
-    bot = _build_bot_or_exit(settings)
+    demo_settings = _with_demo_settings(settings)
+    if demo_settings.ollama_num_predict != settings.ollama_num_predict:
+        console.print(
+            f"[cyan]Demo mode override:[/cyan] OLLAMA_NUM_PREDICT={demo_settings.ollama_num_predict}"
+        )
+
+    bot = _build_bot_or_exit(demo_settings)
     shared_session = _make_local_session(dotenv, conversation_id="demo-suite") if session_mode == "suite" else None
+    if shared_session is not None:
+        shared_session.demo_mode = True
     if shared_session is not None and upload:
         console.print("[bold]Ingesting demo uploads for suite session...[/bold]")
         bot.ingest_and_summarize_uploads(shared_session, upload)
@@ -479,6 +496,7 @@ def demo(
 
         if shared_session is None:
             session = _make_local_session(dotenv, conversation_id=f"demo-{name}")
+            session.demo_mode = True
             if upload:
                 console.print(f"[bold]Ingesting demo uploads for scenario '{name}'...[/bold]")
                 bot.ingest_and_summarize_uploads(session, upload)
