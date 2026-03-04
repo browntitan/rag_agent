@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -10,6 +10,13 @@ from rich.panel import Panel
 
 from agentic_chatbot.config import load_settings
 from agentic_chatbot.context import build_local_context
+from agentic_chatbot.demo import (
+    DemoScenario,
+    DemoTurn,
+    evaluate_response,
+    load_demo_scenarios,
+    render_scenario_summary,
+)
 from agentic_chatbot.providers import build_providers
 from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
@@ -17,31 +24,6 @@ from agentic_chatbot.agents.session import ChatSession
 
 app = typer.Typer(add_completion=False)
 console = Console()
-
-_DEFAULT_DEMO_SCENARIOS: Dict[str, List[str]] = {
-    "router_and_basic": [
-        "What is fan-out vs fan-in in agentic systems?",
-        "Give a concise explanation of retrieval-augmented generation.",
-    ],
-    "utility_and_memory": [
-        "What is 18% of 2400?",
-        "Remember that preferred_jurisdiction is England and Wales.",
-        "What value is saved under preferred_jurisdiction?",
-    ],
-    "kb_grounded_qa": [
-        "According to runbook_incident_response.md, what is the update cadence during SEV-1 incidents? Cite sources.",
-        "From api_rate_limits.md, what are the API rate limits? Include citations.",
-    ],
-    "cross_document_comparison": [
-        "Compare api_auth.md and api_examples.md and highlight practical auth-flow differences with citations.",
-        "Compare runbook_incident_response.md and runbook_oncall_handover.md: where do responsibilities overlap?",
-    ],
-    "requirements_and_extraction": [
-        "In 04_integrations_and_tools.md, extract requirement-like statements and list them with citations.",
-        "List constraints and limits mentioned in 02_pricing_and_plans.md with citations.",
-    ],
-}
-
 
 def _make_app(dotenv: Optional[str] = None) -> ChatbotApp:
     settings = load_settings(dotenv)
@@ -55,26 +37,27 @@ def _make_local_session(dotenv: Optional[str] = None, conversation_id: Optional[
     return ChatSession.from_context(ctx)
 
 
-def _load_demo_scenarios(data_dir: Path) -> Dict[str, List[str]]:
-    path = data_dir / "demo" / "demo_scenarios.json"
-    if not path.exists():
-        return _DEFAULT_DEMO_SCENARIOS
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return _DEFAULT_DEMO_SCENARIOS
-    if not isinstance(raw, dict):
-        return _DEFAULT_DEMO_SCENARIOS
-    out: Dict[str, List[str]] = {}
-    for name, prompts in raw.items():
-        if not isinstance(name, str):
-            continue
-        if not isinstance(prompts, list):
-            continue
-        cleaned = [str(p).strip() for p in prompts if str(p).strip()]
-        if cleaned:
-            out[name] = cleaned
-    return out or _DEFAULT_DEMO_SCENARIOS
+def _render_demo_notes(scenario_obj: DemoScenario) -> str:
+    if not scenario_obj.notes:
+        return ""
+    return f"Notes:\n{scenario_obj.notes}"
+
+
+def _coerce_force_agent(global_force_agent: bool, turn: DemoTurn) -> bool:
+    if global_force_agent:
+        return True
+    if turn.force_agent is None:
+        return False
+    return bool(turn.force_agent)
+
+
+def _verify_status_style(status: str) -> str:
+    style = {
+        "PASS": "green",
+        "WARN": "yellow",
+        "FAIL": "red",
+    }
+    return style.get(status, "white")
 
 
 @app.command()
@@ -203,6 +186,13 @@ def demo(
     list_scenarios: bool = typer.Option(False, "--list-scenarios", help="List available demo scenarios and exit."),
     max_turns: int = typer.Option(0, "--max-turns", help="Max prompts per scenario (0 = all)."),
     force_agent: bool = typer.Option(False, "--force-agent", help="Force AGENT path for every demo prompt."),
+    session_mode: str = typer.Option(
+        "scenario",
+        "--session-mode",
+        help="Session isolation mode: scenario (new session per scenario) or suite (one shared session).",
+    ),
+    verify: bool = typer.Option(False, "--verify", help="Run heuristic response checks and print PASS/WARN/FAIL."),
+    show_notes: bool = typer.Option(False, "--show-notes", help="Show scenario briefing notes before execution."),
     upload: List[Path] = typer.Option([], "--upload", "-u"),
     continue_on_error: bool = typer.Option(True, "--continue-on-error/--stop-on-error"),
     dotenv: Optional[str] = typer.Option(None, "--dotenv"),
@@ -210,12 +200,16 @@ def demo(
     """Run a curated demo suite across multiple capabilities."""
 
     settings = load_settings(dotenv)
-    scenarios = _load_demo_scenarios(settings.data_dir)
+    scenarios = load_demo_scenarios(settings.data_dir)
     if list_scenarios:
-        console.print("Available scenarios:")
-        for name, prompts in scenarios.items():
-            console.print(f"- {name} ({len(prompts)} prompts)")
+        console.print("[bold]Available scenarios:[/bold]")
+        for scenario_obj in scenarios.values():
+            console.print(render_scenario_summary(scenario_obj))
         return
+
+    session_mode = session_mode.strip().lower()
+    if session_mode not in {"scenario", "suite"}:
+        raise typer.BadParameter("--session-mode must be one of: scenario, suite")
 
     selected_names = list(scenarios.keys()) if scenario == "all" else [scenario]
     missing = [name for name in selected_names if name not in scenarios]
@@ -227,31 +221,81 @@ def demo(
 
     providers = build_providers(settings)
     bot = ChatbotApp.create(settings, providers)
-    session = _make_local_session(dotenv)
+    shared_session = _make_local_session(dotenv, conversation_id="demo-suite") if session_mode == "suite" else None
+    if shared_session is not None and upload:
+        console.print("[bold]Ingesting demo uploads for suite session...[/bold]")
+        bot.ingest_and_summarize_uploads(shared_session, upload)
 
-    if upload:
-        console.print("[bold]Ingesting demo uploads...[/bold]")
-        bot.ingest_and_summarize_uploads(session, upload)
+    verify_pass = 0
+    verify_warn = 0
+    verify_fail = 0
 
     for name in selected_names:
-        prompts = scenarios[name]
+        scenario_obj = scenarios[name]
+        turns = list(scenario_obj.turns)
         if max_turns > 0:
-            prompts = prompts[:max_turns]
-        console.print(Panel(f"{name} ({len(prompts)} prompt(s))", title="Scenario"))
-        for i, prompt in enumerate(prompts, start=1):
-            console.print(f"[bold cyan]You[{i}]>[/bold cyan] {prompt}")
+            turns = turns[:max_turns]
+
+        if shared_session is None:
+            session = _make_local_session(dotenv, conversation_id=f"demo-{name}")
+            if upload:
+                console.print(f"[bold]Ingesting demo uploads for scenario '{name}'...[/bold]")
+                bot.ingest_and_summarize_uploads(session, upload)
+        else:
+            session = shared_session
+
+        header = f"{scenario_obj.id} - {scenario_obj.title} ({len(turns)} turn(s), difficulty={scenario_obj.difficulty})"
+        console.print(Panel(header, title="Scenario"))
+        console.print(f"[bold]Goal:[/bold] {scenario_obj.goal}")
+        if scenario_obj.tool_focus:
+            console.print(f"[bold]Tool focus:[/bold] {', '.join(scenario_obj.tool_focus)}")
+        if show_notes and scenario_obj.notes:
+            console.print(Panel(_render_demo_notes(scenario_obj), title="Scenario Notes"))
+
+        for i, turn in enumerate(turns, start=1):
+            console.print(f"[bold cyan]You[{i}]>[/bold cyan] {turn.prompt}")
             try:
                 response = bot.process_turn(
                     session,
-                    user_text=prompt,
+                    user_text=turn.prompt,
                     upload_paths=[],
-                    force_agent=force_agent,
+                    force_agent=_coerce_force_agent(force_agent, turn),
                 )
                 console.print(Panel(response, title="Assistant"))
+
+                if verify:
+                    result = evaluate_response(
+                        response,
+                        scenario=scenario_obj,
+                        turn=turn,
+                    )
+                    style = _verify_status_style(result.status)
+                    console.print(f"[{style}]VERIFY {result.status}[/{style}] [{name} turn {i}]")
+                    for message in result.messages:
+                        console.print(f"- {message}")
+
+                    if result.status == "PASS":
+                        verify_pass += 1
+                    elif result.status == "WARN":
+                        verify_warn += 1
+                    else:
+                        verify_fail += 1
+                        if not continue_on_error:
+                            raise typer.Exit(code=1)
             except Exception as e:
                 console.print(Panel(f"Demo prompt failed: {e}", title="Error"))
+                if verify:
+                    verify_fail += 1
                 if not continue_on_error:
                     raise typer.Exit(code=1)
+
+    if verify:
+        summary = (
+            f"PASS={verify_pass}  "
+            f"WARN={verify_warn}  "
+            f"FAIL={verify_fail}"
+        )
+        console.print(Panel(summary, title="Verification Summary"))
 
 
 @app.command("serve-api")

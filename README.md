@@ -222,6 +222,29 @@ docker exec ollama ollama pull qwen2.5:14b       # good balance
 docker exec ollama ollama pull gpt-oss:20b       # project default
 ```
 
+Use your own GGUF model with Ollama (manual flow):
+
+1. Put `.gguf` and `Modelfile` in `./data/ollama/gguf/`
+2. Create model inside the running Ollama container
+3. Point app config to that model name
+
+```bash
+docker compose exec ollama ollama create my-gguf-model -f /gguf/Modelfile
+```
+
+```env
+OLLAMA_CHAT_MODEL=my-gguf-model
+OLLAMA_JUDGE_MODEL=my-gguf-model
+```
+
+Optional compose auto-import (one-shot helper service):
+
+```env
+OLLAMA_GGUF_AUTO_IMPORT=true
+OLLAMA_GGUF_MODEL_NAME=my-gguf-model
+OLLAMA_GGUF_MODELFILE=/gguf/Modelfile
+```
+
 Verify Ollama is accessible:
 
 ```bash
@@ -245,7 +268,7 @@ docker compose --profile observability up -d
 Open Langfuse:
 
 - UI: `http://localhost:3000`
-- MinIO console (optional): `http://localhost:9091`
+- MinIO console (optional): `http://localhost:${LANGFUSE_MINIO_CONSOLE_PORT:-9091}`
 
 Then either:
 
@@ -540,9 +563,25 @@ Type your question at the `You>` prompt. Use `/upload PATH` to ingest a document
 
 ```bash
 python run.py demo --list-scenarios
-python run.py demo --scenario kb_grounded_qa
-python run.py demo --scenario all --max-turns 2
+python run.py demo --scenario utility_memory_finance_bootstrap --verify
+python run.py demo --scenario parallel_rag_multi_doc_risk_board --force-agent --verify
+python run.py demo --scenario all --session-mode scenario --verify
 ```
+
+Manager-facing showcase order (recommended):
+
+1. `utility_memory_finance_bootstrap`
+2. `rag_clause_navigation_and_extraction`
+3. `rag_structural_diff_contract_versions`
+4. `parallel_rag_multi_doc_risk_board`
+5. `executive_due_diligence_grand_finale`
+
+If Langfuse is enabled, run demo scenarios and inspect traces in `http://localhost:3000` to show:
+
+- router decisions
+- supervisor handoffs
+- multi-step tool usage
+- final synthesis traces
 
 ---
 
@@ -653,6 +692,9 @@ python run.py demo [OPTIONS]
 | `--list-scenarios` | List available scenarios and exit |
 | `--max-turns INT` | Max prompts per scenario (`0` = all) |
 | `--force-agent` | Force AGENT path for all demo prompts |
+| `--session-mode TEXT` | `scenario` (fresh session per scenario) or `suite` (shared session) |
+| `--verify` | Run heuristic checks and print `PASS/WARN/FAIL` per turn |
+| `--show-notes` | Print scenario briefing notes before execution |
 | `-u PATH` / `--upload PATH` | Ingest file(s) before demo starts |
 | `--continue-on-error / --stop-on-error` | Continue or abort on first failing prompt |
 | `--dotenv PATH` | Load a specific `.env` file |
@@ -661,8 +703,9 @@ Examples:
 
 ```bash
 python run.py demo --list-scenarios
-python run.py demo --scenario utility_and_memory
-python run.py demo --scenario all --max-turns 2
+python run.py demo --scenario utility_memory_finance_bootstrap --verify
+python run.py demo --scenario rag_clause_compare_conflict_review --force-agent --verify
+python run.py demo --scenario all --session-mode scenario --max-turns 2
 ```
 
 ---
@@ -793,6 +836,10 @@ If a `.md` file is missing, the system falls back to a hardcoded Python constant
 - **Output format** — change how the GeneralAgent presents answers in `general_agent.md`
 - **Search strategy hints** — add document-type-specific rules to `rag_agent.md`
 - **Citation format** — adjust inline citation style in `skills.md`
+
+For a full governance and authoring guide, see:
+
+- `docs/SKILLS_PLAYBOOK.md`
 
 ---
 
@@ -1266,6 +1313,9 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
 | `OLLAMA_NUM_PREDICT` | `512` | No | Max output tokens |
+| `OLLAMA_GGUF_AUTO_IMPORT` | `false` | No | Enable one-shot GGUF model creation helper in compose |
+| `OLLAMA_GGUF_MODEL_NAME` | — | If auto import | Model name to create with `ollama create` |
+| `OLLAMA_GGUF_MODELFILE` | `/gguf/Modelfile` | If auto import | Modelfile path mounted inside Ollama/importer containers |
 | `AZURE_OPENAI_API_KEY` | — | If Azure | Azure API key |
 | `AZURE_OPENAI_ENDPOINT` | — | If Azure | Azure resource endpoint |
 | `AZURE_OPENAI_API_VERSION` | `2024-05-01-preview` | If Azure | Azure API version |

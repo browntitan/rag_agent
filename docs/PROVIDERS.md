@@ -1,6 +1,6 @@
-# Providers and backend config
+# Providers and Backend Config
 
-## LLM / embeddings providers
+## LLM / Embeddings Providers
 
 Supported today:
 
@@ -8,7 +8,7 @@ Supported today:
 - judge LLM: `ollama` or `azure`
 - embeddings: `ollama` or `azure`
 
-### Ollama example
+### Ollama Example
 
 ```bash
 LLM_PROVIDER=ollama
@@ -23,7 +23,37 @@ OLLAMA_TEMPERATURE=0.2
 JUDGE_TEMPERATURE=0.0
 ```
 
-### Azure OpenAI example
+### Ollama GGUF Model Workflow
+
+GGUF is supported via Ollama model creation.
+
+Manual flow:
+
+1. Put your `.gguf` file and `Modelfile` under `./data/ollama/gguf`.
+2. Create model in the running Ollama container:
+
+```bash
+docker compose exec ollama ollama create my-gguf-model -f /gguf/Modelfile
+```
+
+3. Point app settings to the created model:
+
+```bash
+OLLAMA_CHAT_MODEL=my-gguf-model
+OLLAMA_JUDGE_MODEL=my-gguf-model
+```
+
+Optional auto-import flow:
+
+```bash
+OLLAMA_GGUF_AUTO_IMPORT=true
+OLLAMA_GGUF_MODEL_NAME=my-gguf-model
+OLLAMA_GGUF_MODELFILE=/gguf/Modelfile
+```
+
+When auto-import is enabled, `ollama-gguf-importer` runs once and creates the model if missing.
+
+### Azure OpenAI Example
 
 ```bash
 LLM_PROVIDER=azure
@@ -40,7 +70,7 @@ AZURE_TEMPERATURE=0.2
 JUDGE_TEMPERATURE=0.0
 ```
 
-## Storage/backend switches
+## Storage / Backend Switches
 
 ```bash
 DATABASE_BACKEND=postgres
@@ -54,7 +84,7 @@ Current implementation supports `postgres` + `pgvector` + local file-backed skil
 
 `OBJECT_STORE_BACKEND=s3|azure_blob` and remote skills/prompts backends are scaffolded in config but not implemented yet.
 
-## Path-based prompt/skills config
+## Path-Based Prompt / Skills Config
 
 ```bash
 SKILLS_DIR=./data/skills

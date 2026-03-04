@@ -26,6 +26,57 @@ services:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
+      - ./data/ollama/gguf:/gguf
+
+  ollama-gguf-importer:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_GGUF_AUTO_IMPORT: ${OLLAMA_GGUF_AUTO_IMPORT:-false}
+      OLLAMA_GGUF_MODEL_NAME: ${OLLAMA_GGUF_MODEL_NAME:-}
+      OLLAMA_GGUF_MODELFILE: ${OLLAMA_GGUF_MODELFILE:-/gguf/Modelfile}
+    volumes:
+      - ./data/ollama/gguf:/gguf:ro
+    entrypoint: >
+      /bin/sh -c "
+      set -eu;
+      if [ \"${OLLAMA_GGUF_AUTO_IMPORT}\" != \"true\" ]; then
+        echo 'OLLAMA_GGUF_AUTO_IMPORT=false -> skipping GGUF import';
+        exit 0;
+      fi;
+      if [ -z \"${OLLAMA_GGUF_MODEL_NAME}\" ]; then
+        echo 'OLLAMA_GGUF_MODEL_NAME is required when auto import is enabled';
+        exit 1;
+      fi;
+      if [ ! -f \"${OLLAMA_GGUF_MODELFILE}\" ]; then
+        echo \"Modelfile not found at ${OLLAMA_GGUF_MODELFILE}\";
+        exit 1;
+      fi;
+      i=0;
+      until ollama list >/dev/null 2>&1; do
+        i=$((i + 1));
+        if [ $i -ge 60 ]; then
+          echo 'Timed out waiting for Ollama API';
+          exit 1;
+        fi;
+        sleep 2;
+      done;
+      if ollama list | awk 'NR>1 {print $1}' | grep -Fx \"${OLLAMA_GGUF_MODEL_NAME}\" >/dev/null 2>&1; then
+        echo \"Model ${OLLAMA_GGUF_MODEL_NAME} already exists; skipping create\";
+        exit 0;
+      fi;
+      echo \"Creating model ${OLLAMA_GGUF_MODEL_NAME} from ${OLLAMA_GGUF_MODELFILE}\";
+      ollama create \"${OLLAMA_GGUF_MODEL_NAME}\" -f \"${OLLAMA_GGUF_MODELFILE}\";
+      echo 'GGUF import complete';
+      "
 
   app:
     build:

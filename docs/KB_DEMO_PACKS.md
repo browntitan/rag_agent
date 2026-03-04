@@ -1,72 +1,70 @@
-# Demo knowledge base packs
+# Demo Knowledge Base Packs
 
-The repository ships with a longer `data/kb/` pack designed to exercise:
+The repository now includes an expanded enterprise demo corpus designed to force multi-step tool behavior:
 
-- retrieval across multiple documents
-- chunk-level citations
-- clause/requirement extraction workflows
-- cross-document comparison and synthesis
+- document resolution from partial names
+- hybrid retrieval across long files
+- clause extraction and side-by-side clause comparison
+- requirements mining from SHALL/MUST/REQ language
+- parallel multi-document synthesis for executive decisions
 
-## Pack A — Acme Agent Platform
+## Long-Form Demo Pack
 
-- `01_product_overview.md`
-- `02_pricing_and_plans.md`
-- `03_security_and_privacy.md`
-- `04_integrations_and_tools.md`
-- `05_release_notes.md`
+Core showcase files:
 
-### Suggested prompts
+- `06_master_services_agreement_v1.md`
+- `07_master_services_agreement_v2.md`
+- `08_data_processing_addendum_global.md`
+- `09_ai_ops_control_standard.md`
+- `10_incident_communications_playbook.md`
+- `11_vendor_security_schedule.md`
 
-- "According to the docs, what data retention policy applies to the Enterprise plan? Cite sections."
-- "What tool schema best practices does the platform recommend?"
-- "What changed between v1.3 and v1.4 that could affect tool calling?"
+Existing baseline pack remains available:
 
-## Pack B — Engineering runbooks
+- product docs: `01_*` to `05_*`
+- runbooks: `runbook_*`
+- API references: `api_*`
 
-- `runbook_incident_response.md`
-- `runbook_oncall_handover.md`
-- `runbook_data_pipeline.md`
+## Scenario-to-Pack Mapping
 
-### Suggested prompts
+Scenario definitions live in `data/demo/demo_scenarios.json` (v2 structured schema).
 
-- "What is the update cadence during SEV-1 incidents? Cite the runbook."
-- "Give me a checklist for oncall handover."
+- `utility_memory_finance_bootstrap`
+  - Primary docs: all indexed docs via `list_indexed_docs`
+  - Focus: utility + memory reliability
+- `rag_resolution_and_search_strategy`
+  - Primary docs: release notes, integrations, security/privacy
+  - Focus: resolve + search strategy switching
+- `rag_clause_navigation_and_extraction`
+  - Primary docs: `06_master_services_agreement_v1.md`
+  - Focus: structure scan + exact clause extraction
+- `rag_requirements_traceability`
+  - Primary docs: `09_ai_ops_control_standard.md`, `11_vendor_security_schedule.md`
+  - Focus: requirements extraction and filter refinement
+- `rag_structural_diff_contract_versions`
+  - Primary docs: `06_master_services_agreement_v1.md`, `07_master_services_agreement_v2.md`
+  - Focus: structural diff and change categorization
+- `rag_clause_compare_conflict_review`
+  - Primary docs: `06_master_services_agreement_v1.md`, `07_master_services_agreement_v2.md`
+  - Focus: clause-by-clause contradiction review
+- `parallel_rag_multi_doc_risk_board`
+  - Primary docs: `08_data_processing_addendum_global.md`, `09_ai_ops_control_standard.md`, `10_incident_communications_playbook.md`
+  - Focus: fan-out/fan-in synthesis across domains
+- `executive_due_diligence_grand_finale`
+  - Primary docs: `06_master_services_agreement_v2.md`, `08_data_processing_addendum_global.md`, `11_vendor_security_schedule.md`
+  - Focus: executive recommendation with evidence and budget math
 
-## Pack C — Internal API docs
-
-- `api_auth.md`
-- `api_endpoints.md`
-- `api_rate_limits.md`
-- `api_examples.md`
-
-### Suggested prompts
-
-- "How do I authenticate to the API? Provide the required headers and cite the docs."
-- "What are the rate limits for the /v1/agents endpoints?"
-
-## Upload demos
-
-Try uploading one of your own files:
-
-- PDF contract / spec
-- Markdown meeting notes
-- A long text file
-
-Then ask:
-
-- "Summarize the uploaded doc and list open questions."
-- "Extract all key requirements and constraints with citations."
-
-## Demo runner
-
-You can run curated multi-turn demos from the CLI:
+## Demo Runner
 
 ```bash
 python run.py demo --list-scenarios
-python run.py demo --scenario kb_grounded_qa
-python run.py demo --scenario all --max-turns 2
+python run.py demo --scenario utility_memory_finance_bootstrap --verify
+python run.py demo --scenario parallel_rag_multi_doc_risk_board --force-agent
+python run.py demo --scenario all --session-mode scenario --verify
 ```
 
-Scenario definitions live in:
+Notes:
 
-- `data/demo/demo_scenarios.json`
+- `--session-mode scenario` creates a fresh conversation context per scenario.
+- `--session-mode suite` reuses one session across the full run.
+- `--verify` prints heuristic `PASS/WARN/FAIL` checks per turn.
