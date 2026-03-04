@@ -537,7 +537,7 @@ python run.py demo --scenario all --max-turns 2
 
 ### 8.1 Index the Built-in Knowledge Base
 
-The `data/kb/` directory contains 12 demo documents (product docs, API references, runbooks). Index them:
+The `data/kb/` directory contains 18 demo documents (product docs, API references, runbooks, and long-form enterprise contract/compliance packs). Index them:
 
 ```bash
 python run.py init-kb
@@ -582,6 +582,19 @@ If Langfuse is enabled, run demo scenarios and inspect traces in `http://localho
 - supervisor handoffs
 - multi-step tool usage
 - final synthesis traces
+
+### 8.5 Demo Showcase Catalog
+
+| Scenario ID | Primary Objective | Core Tool/Flow Coverage |
+|---|---|---|
+| `utility_memory_finance_bootstrap` | Prove deterministic utility behavior | `calculator`, `list_indexed_docs`, `memory_*` |
+| `rag_resolution_and_search_strategy` | Show resolution + retrieval strategy switching | `resolve_document`, `search_document`, `search_all_documents` |
+| `rag_clause_navigation_and_extraction` | Extract exact legal clauses | `list_document_structure`, `extract_clauses` |
+| `rag_requirements_traceability` | Build requirements trace map | `extract_requirements`, scoped search |
+| `rag_structural_diff_contract_versions` | Surface structural deltas between versions | `diff_documents`, synthesis |
+| `rag_clause_compare_conflict_review` | Detect clause conflicts and strictness shifts | `compare_clauses`, scratchpad tools |
+| `parallel_rag_multi_doc_risk_board` | Demonstrate fan-out/fan-in orchestration | supervisor `parallel_rag`, workers, synthesizer |
+| `executive_due_diligence_grand_finale` | End-to-end board-ready recommendation | mixed utility + RAG + memory |
 
 ---
 
@@ -1212,7 +1225,9 @@ port 5432 failed: Connection refused
 ```
 
 - Check the container is running: `docker ps | grep ragdb`
-- Start it if stopped: `docker start ragdb`
+- If you use Docker Compose, check the DB service: `docker compose ps rag-postgres`
+- Start it if stopped (Compose): `docker compose up -d rag-postgres`
+- If you run a standalone container named `ragdb`, start it with: `docker start ragdb`
 - Verify the `PG_DSN` in your `.env` matches the container credentials
 
 ---
@@ -1240,7 +1255,7 @@ OllamaError: model 'llama3.1:8b' not found
 Pull the model:
 
 ```bash
-docker exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull llama3.1:8b
 ```
 
 Or set `OLLAMA_CHAT_MODEL` in `.env` to a model you have pulled.
@@ -1324,7 +1339,7 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `AZURE_OPENAI_EMBED_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
 | `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
 | `JUDGE_TEMPERATURE` | `0.0` | No | Judge-model temperature |
-| `PG_DSN` | `postgresql://localhost:5432/ragdb` | Yes | PostgreSQL connection string |
+| `PG_DSN` | `postgresql://raguser:ragpass@localhost:5432/ragdb` | Yes | PostgreSQL connection string |
 | `RAG_DB_NAME` | `ragdb` | No | Compose-managed primary DB name |
 | `RAG_DB_USER` | `raguser` | No | Compose-managed primary DB user |
 | `RAG_DB_PASSWORD` | `ragpass` | No | Compose-managed primary DB password |
@@ -1412,6 +1427,12 @@ langchain_agentic_chatbot_v2/
 │   │   ├── 03_security_and_privacy.md
 │   │   ├── 04_integrations_and_tools.md
 │   │   ├── 05_release_notes.md
+│   │   ├── 06_master_services_agreement_v1.md
+│   │   ├── 07_master_services_agreement_v2.md
+│   │   ├── 08_data_processing_addendum_global.md
+│   │   ├── 09_ai_ops_control_standard.md
+│   │   ├── 10_incident_communications_playbook.md
+│   │   ├── 11_vendor_security_schedule.md
 │   │   ├── api_auth.md
 │   │   ├── api_endpoints.md
 │   │   ├── api_examples.md
@@ -1419,6 +1440,8 @@ langchain_agentic_chatbot_v2/
 │   │   ├── runbook_data_pipeline.md
 │   │   ├── runbook_incident_response.md
 │   │   └── runbook_oncall_handover.md
+│   ├── ollama/
+│   │   └── gguf/                 # Optional GGUF drop folder + Modelfile
 │   ├── skills/                    # Agent system prompts (edit without code changes)
 │   │   ├── skills.md              # Shared context injected into all agents
 │   │   ├── general_agent.md       # GeneralAgent + BasicChat instructions + few-shot examples
@@ -1448,6 +1471,7 @@ langchain_agentic_chatbot_v2/
 │   ├── OPENAI_GATEWAY.md           # OpenAI-compatible /v1 gateway + OpenWebUI/AI SDK wiring
 │   ├── ROUTER_RUBRIC.md           # Router decision rules and confidence scoring
 │   ├── KB_DEMO_PACKS.md           # Built-in knowledge base document descriptions
+│   ├── SKILLS_PLAYBOOK.md         # Skill authoring and governance playbook
 │   └── COMPOSITION.md             # How the system components compose together
 │
 └── src/agentic_chatbot/
@@ -1457,6 +1481,7 @@ langchain_agentic_chatbot_v2/
     ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes, serve-api)
     ├── config.py                  # Settings dataclass + load_settings() from env
     ├── context.py                 # RequestContext + local default context resolver
+    ├── demo/                      # Structured scenario parser + verification helpers
     ├── prompting.py               # Prompt template loading + token replacement
     │
     ├── agents/
