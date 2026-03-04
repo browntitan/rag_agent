@@ -172,13 +172,27 @@ def make_utility_agent_node(
                         grouped = list_docs_tool.invoke({})
                         rendered = _render_grouped_docs_for_demo(grouped)
                         if rendered:
-                            return {"messages": [AIMessage(content=rendered)]}
+                            return {
+                                "messages": [
+                                    AIMessage(
+                                        content=rendered,
+                                        additional_kwargs={"execution_path": "demo_deterministic:list_docs"},
+                                    )
+                                ]
+                            }
                     except Exception as e:
                         logger.warning("Demo list_docs fallback failed: %s", e)
                 if _is_demo_reserve_calc_query(user_text):
                     rendered = _compute_demo_reserve_answer(user_text)
                     if rendered:
-                        return {"messages": [AIMessage(content=rendered)]}
+                        return {
+                            "messages": [
+                                AIMessage(
+                                    content=rendered,
+                                    additional_kwargs={"execution_path": "demo_deterministic:reserve_calc"},
+                                )
+                            ]
+                        }
 
         # Build messages for the utility subgraph
         from langchain_core.messages import SystemMessage  # noqa: PLC0415

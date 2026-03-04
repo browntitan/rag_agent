@@ -97,6 +97,27 @@ def make_supervisor_node(
 
         loop_count += 1
 
+        # Demo-mode stabilization: once a specialist has produced a non-empty
+        # assistant message for the current user turn, terminate immediately
+        # instead of re-routing through extra supervisor loops.
+        if state.get("demo_mode", False):
+            messages = state.get("messages", [])
+            last_human_idx = -1
+            for idx, msg in enumerate(messages):
+                if getattr(msg, "type", "") == "human":
+                    last_human_idx = idx
+            if last_human_idx >= 0:
+                for ai_idx in range(len(messages) - 1, -1, -1):
+                    msg = messages[ai_idx]
+                    if getattr(msg, "type", "") != "ai":
+                        continue
+                    content = str(getattr(msg, "content", "") or "").strip()
+                    if not content:
+                        continue
+                    if ai_idx > last_human_idx:
+                        return {"next_agent": "__end__", "final_answer": content}
+                    break
+
         # Safety: force end after max loops
         if loop_count > max_loops:
             logger.warning("Supervisor hit max loops (%d), forcing __end__", max_loops)
