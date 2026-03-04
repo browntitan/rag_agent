@@ -225,10 +225,7 @@ def ingest_paths(
         chunks = _split_with_structure(settings, raw_docs, structure)
         chunk_records = _build_chunk_records(chunks, doc_id)
 
-        # Persist chunks (embeddings computed inside ChunkStore.add_chunks)
-        stores.chunk_store.add_chunks(chunk_records, tenant_id=tenant_id)
-
-        # Persist document record
+        # Persist parent doc row first (chunks.doc_id has FK -> documents.doc_id).
         stores.doc_store.upsert_document(
             DocumentRecord(
                 doc_id=doc_id,
@@ -243,6 +240,14 @@ def ingest_paths(
                 doc_structure_type=structure.doc_structure_type,
             )
         )
+
+        # Persist chunks (embeddings computed inside ChunkStore.add_chunks).
+        # If this fails, remove the document row to avoid orphan metadata.
+        try:
+            stores.chunk_store.add_chunks(chunk_records, tenant_id=tenant_id)
+        except Exception:
+            stores.doc_store.delete_document(doc_id, tenant_id=tenant_id)
+            raise
 
         ingested_doc_ids.append(doc_id)
 
