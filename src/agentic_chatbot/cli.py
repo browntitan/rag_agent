@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+from urllib.error import URLError
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 
-from agentic_chatbot.config import load_settings
+from agentic_chatbot.config import Settings, load_settings
 from agentic_chatbot.context import build_local_context
 from agentic_chatbot.demo import (
     DemoScenario,
@@ -17,7 +22,11 @@ from agentic_chatbot.demo import (
     load_demo_scenarios,
     render_scenario_summary,
 )
-from agentic_chatbot.providers import build_providers
+from agentic_chatbot.providers import (
+    ProviderDependencyError,
+    build_providers,
+    validate_provider_dependencies,
+)
 from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
 
@@ -25,10 +34,23 @@ from agentic_chatbot.agents.session import ChatSession
 app = typer.Typer(add_completion=False)
 console = Console()
 
-def _make_app(dotenv: Optional[str] = None) -> ChatbotApp:
-    settings = load_settings(dotenv)
+
+@dataclass(frozen=True)
+class DoctorCheckResult:
+    name: str
+    status: str
+    details: str
+    remediation: str = ""
+
+
+def _build_bot(settings: Settings) -> ChatbotApp:
     providers = build_providers(settings)
     return ChatbotApp.create(settings, providers)
+
+
+def _make_app(dotenv: Optional[str] = None) -> ChatbotApp:
+    settings = load_settings(dotenv)
+    return _build_bot(settings)
 
 
 def _make_local_session(dotenv: Optional[str] = None, conversation_id: Optional[str] = None) -> ChatSession:
@@ -60,6 +82,57 @@ def _verify_status_style(status: str) -> str:
     return style.get(status, "white")
 
 
+def _doctor_status_style(status: str) -> str:
+    style = {
+        "PASS": "green",
+        "WARN": "yellow",
+        "FAIL": "red",
+        "SKIP": "cyan",
+    }
+    return style.get(status, "white")
+
+
+def _mask_dsn_password(dsn: str) -> str:
+    try:
+        parsed = urlsplit(dsn)
+    except Exception:
+        return dsn
+
+    if not parsed.scheme or "@" not in parsed.netloc:
+        return dsn
+
+    userinfo, hostinfo = parsed.netloc.rsplit("@", 1)
+    if ":" in userinfo:
+        username = userinfo.split(":", 1)[0]
+        masked_userinfo = f"{username}:***"
+    else:
+        masked_userinfo = userinfo
+
+    return urlunsplit((parsed.scheme, f"{masked_userinfo}@{hostinfo}", parsed.path, parsed.query, parsed.fragment))
+
+
+def _exit_provider_dependency_error(exc: ProviderDependencyError) -> None:
+    console.print(Panel(str(exc), title="Provider Dependency Error", border_style="red"))
+    console.print("Run `python run.py doctor` to validate providers, database, and Ollama connectivity.")
+    raise typer.Exit(code=2)
+
+
+def _make_app_or_exit(dotenv: Optional[str] = None) -> ChatbotApp:
+    try:
+        return _make_app(dotenv)
+    except ProviderDependencyError as exc:
+        _exit_provider_dependency_error(exc)
+        raise
+
+
+def _build_bot_or_exit(settings: Settings) -> ChatbotApp:
+    try:
+        return _build_bot(settings)
+    except ProviderDependencyError as exc:
+        _exit_provider_dependency_error(exc)
+        raise
+
+
 @app.command()
 def ask(
     question: str = typer.Option(..., "--question", "-q"),
@@ -69,7 +142,7 @@ def ask(
 ):
     """Run a single-turn query."""
 
-    bot = _make_app(dotenv)
+    bot = _make_app_or_exit(dotenv)
     session = _make_local_session(dotenv)
 
     response = bot.process_turn(session, user_text=question, upload_paths=upload, force_agent=force_agent)
@@ -84,7 +157,7 @@ def chat(
 ):
     """Start an interactive chat session. Use /upload PATH to ingest docs mid-chat."""
 
-    bot = _make_app(dotenv)
+    bot = _make_app_or_exit(dotenv)
     session = _make_local_session(dotenv)
 
     if upload:
@@ -125,7 +198,7 @@ def chat(
 def init_kb(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
     """Force (re)indexing of the built-in demo KB."""
 
-    bot = _make_app(dotenv)
+    bot = _make_app_or_exit(dotenv)
     # `ensure_kb_indexed` already runs on init; this command just confirms.
     console.print("KB indexing ensured. Indexed documents:")
     tenant_id = bot.ctx.settings.default_tenant_id
@@ -181,6 +254,175 @@ def migrate(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
 
 
 @app.command()
+def doctor(
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero if any WARN checks are present."),
+    timeout_seconds: float = typer.Option(3.0, "--timeout-seconds", min=0.5, help="Timeout used for connectivity checks."),
+    check_db: bool = typer.Option(True, "--check-db/--skip-db", help="Enable or skip PostgreSQL connectivity check."),
+    check_ollama: bool = typer.Option(
+        True,
+        "--check-ollama/--skip-ollama",
+        help="Enable or skip Ollama API check when Ollama providers are selected.",
+    ),
+):
+    """Run provider/runtime preflight checks for local or Docker execution."""
+
+    settings = load_settings(dotenv)
+    provider_set = {
+        settings.llm_provider.lower(),
+        settings.judge_provider.lower(),
+        settings.embeddings_provider.lower(),
+    }
+    needs_ollama = "ollama" in provider_set
+
+    config_lines = [
+        f"LLM_PROVIDER={settings.llm_provider}",
+        f"JUDGE_PROVIDER={settings.judge_provider}",
+        f"EMBEDDINGS_PROVIDER={settings.embeddings_provider}",
+        f"OLLAMA_BASE_URL={settings.ollama_base_url}",
+        f"PG_DSN={_mask_dsn_password(settings.pg_dsn)}",
+    ]
+    console.print(Panel("\n".join(config_lines), title="Selected Configuration"))
+
+    checks: List[DoctorCheckResult] = []
+
+    issues = validate_provider_dependencies(settings)
+    if issues:
+        details = "; ".join(f"{issue.module} ({', '.join(issue.contexts)})" for issue in issues)
+        remediation = "Install dependencies with `python -m pip install -r requirements.txt`, then rerun `python run.py doctor`."
+        checks.append(
+            DoctorCheckResult(
+                name="Provider dependency packages",
+                status="FAIL",
+                details=details,
+                remediation=remediation,
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheckResult(
+                name="Provider dependency packages",
+                status="PASS",
+                details="All required provider packages are importable.",
+            )
+        )
+
+    if check_db:
+        try:
+            import psycopg2
+
+            conn = psycopg2.connect(dsn=settings.pg_dsn, connect_timeout=max(1, int(timeout_seconds)))
+            conn.close()
+            checks.append(
+                DoctorCheckResult(
+                    name="PostgreSQL connectivity",
+                    status="PASS",
+                    details="Connected to PG_DSN successfully.",
+                )
+            )
+        except Exception as exc:  # pragma: no cover - environment dependent
+            checks.append(
+                DoctorCheckResult(
+                    name="PostgreSQL connectivity",
+                    status="FAIL",
+                    details=str(exc),
+                    remediation="Ensure PostgreSQL is running and PG_DSN points to a reachable instance.",
+                )
+            )
+    else:
+        checks.append(
+            DoctorCheckResult(
+                name="PostgreSQL connectivity",
+                status="SKIP",
+                details="Skipped by --skip-db.",
+            )
+        )
+
+    if not needs_ollama:
+        checks.append(
+            DoctorCheckResult(
+                name="Ollama API reachability",
+                status="SKIP",
+                details="No Ollama provider selected.",
+            )
+        )
+    elif not check_ollama:
+        checks.append(
+            DoctorCheckResult(
+                name="Ollama API reachability",
+                status="SKIP",
+                details="Skipped by --skip-ollama.",
+            )
+        )
+    else:
+        url = settings.ollama_base_url.rstrip("/") + "/api/tags"
+        try:
+            req = Request(url, method="GET")
+            with urlopen(req, timeout=timeout_seconds) as resp:
+                code = int(resp.getcode() or 0)
+            if 200 <= code < 300:
+                checks.append(
+                    DoctorCheckResult(
+                        name="Ollama API reachability",
+                        status="PASS",
+                        details=f"HTTP {code} from {url}.",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        name="Ollama API reachability",
+                        status="FAIL",
+                        details=f"Received HTTP {code} from {url}.",
+                        remediation="Ensure Ollama is running and OLLAMA_BASE_URL is correct.",
+                    )
+                )
+        except URLError as exc:  # pragma: no cover - environment dependent
+            checks.append(
+                DoctorCheckResult(
+                    name="Ollama API reachability",
+                    status="FAIL",
+                    details=str(exc.reason),
+                    remediation="Start Ollama or update OLLAMA_BASE_URL to a reachable endpoint.",
+                )
+            )
+        except Exception as exc:  # pragma: no cover - environment dependent
+            checks.append(
+                DoctorCheckResult(
+                    name="Ollama API reachability",
+                    status="FAIL",
+                    details=str(exc),
+                    remediation="Start Ollama or update OLLAMA_BASE_URL to a reachable endpoint.",
+                )
+            )
+
+    table = Table(title="Doctor Preflight Results")
+    table.add_column("Check", style="bold")
+    table.add_column("Status", justify="center")
+    table.add_column("Details")
+    for row in checks:
+        status_style = _doctor_status_style(row.status)
+        table.add_row(row.name, f"[{status_style}]{row.status}[/{status_style}]", row.details)
+    console.print(table)
+
+    remediations = [row.remediation for row in checks if row.remediation]
+    if remediations:
+        unique_remediations: List[str] = []
+        for remediation in remediations:
+            if remediation not in unique_remediations:
+                unique_remediations.append(remediation)
+        console.print(Panel("\n".join(f"- {item}" for item in unique_remediations), title="Suggested Fixes"))
+
+    fail_count = sum(1 for row in checks if row.status == "FAIL")
+    warn_count = sum(1 for row in checks if row.status == "WARN")
+
+    if fail_count > 0 or (strict and warn_count > 0):
+        raise typer.Exit(code=1)
+
+    console.print("[green]Doctor checks passed.[/green]")
+
+
+@app.command()
 def demo(
     scenario: str = typer.Option("all", "--scenario", "-s", help="Scenario name, or 'all'."),
     list_scenarios: bool = typer.Option(False, "--list-scenarios", help="List available demo scenarios and exit."),
@@ -219,8 +461,7 @@ def demo(
             f"Use --list-scenarios to see valid names."
         )
 
-    providers = build_providers(settings)
-    bot = ChatbotApp.create(settings, providers)
+    bot = _build_bot_or_exit(settings)
     shared_session = _make_local_session(dotenv, conversation_id="demo-suite") if session_mode == "suite" else None
     if shared_session is not None and upload:
         console.print("[bold]Ingesting demo uploads for suite session...[/bold]")

@@ -17,10 +17,11 @@ from agentic_chatbot.agents.orchestrator import ChatbotApp
 from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot.config import Settings, load_settings
 from agentic_chatbot.context import RequestContext, build_local_context
-from agentic_chatbot.providers import build_providers
+from agentic_chatbot.providers import ProviderDependencyError, build_providers
 from agentic_chatbot.rag import ingest_paths
 
 logger = logging.getLogger(__name__)
+_runtime_init_error_logged = False
 
 
 class OpenAIMessage(BaseModel):
@@ -60,14 +61,34 @@ def get_settings() -> Settings:
 
 @lru_cache(maxsize=1)
 def _get_runtime() -> Runtime:
+    global _runtime_init_error_logged
     settings = get_settings()
-    providers = build_providers(settings)
-    bot = ChatbotApp.create(settings, providers)
-    return Runtime(settings=settings, bot=bot)
+    logger.info(
+        "initializing runtime providers llm=%s judge=%s embeddings=%s",
+        settings.llm_provider,
+        settings.judge_provider,
+        settings.embeddings_provider,
+    )
+    try:
+        providers = build_providers(settings)
+        bot = ChatbotApp.create(settings, providers)
+        return Runtime(settings=settings, bot=bot)
+    except ProviderDependencyError as exc:
+        if not _runtime_init_error_logged:
+            logger.error("runtime initialization failed due to provider dependencies: %s", exc)
+            _runtime_init_error_logged = True
+        raise
 
 
 def get_runtime() -> Runtime:
     return _get_runtime()
+
+
+def get_runtime_or_503() -> Runtime:
+    try:
+        return get_runtime()
+    except ProviderDependencyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _coerce_content(content: Any) -> str:
@@ -210,7 +231,7 @@ def health_live() -> Dict[str, str]:
 
 
 @app.get("/health/ready")
-def health_ready(runtime: Runtime = Depends(get_runtime)) -> Dict[str, str]:
+def health_ready(runtime: Runtime = Depends(get_runtime_or_503)) -> Dict[str, str]:
     return {"status": "ready", "model": runtime.settings.gateway_model_id}
 
 
@@ -235,7 +256,7 @@ def list_models(
 @app.post("/v1/chat/completions")
 def chat_completions(
     request: ChatCompletionsRequest,
-    runtime: Runtime = Depends(get_runtime),
+    runtime: Runtime = Depends(get_runtime_or_503),
     x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
     x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
 ):
@@ -280,7 +301,7 @@ def chat_completions(
 @app.post("/v1/ingest/documents")
 def ingest_documents(
     request: IngestDocumentsRequest,
-    runtime: Runtime = Depends(get_runtime),
+    runtime: Runtime = Depends(get_runtime_or_503),
     x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
     x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
 ) -> Dict[str, Any]:

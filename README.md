@@ -88,6 +88,9 @@ Storage:
    tables: documents, chunks, memory
 ```
 
+Detailed C4 diagrams (including Level 3 runtime components) are in
+[`docs/C4_ARCHITECTURE.md`](docs/C4_ARCHITECTURE.md#c4-level-3-component-view-application-runtime-container).
+
 ---
 
 ## 3. Prerequisites
@@ -517,6 +520,7 @@ Run these in order on a fresh setup:
 # 1) start PostgreSQL (pgvector image) and Ollama/Azure config
 # 2) install deps and create .env
 
+python run.py doctor
 python run.py migrate
 python run.py init-kb
 
@@ -534,6 +538,14 @@ python run.py demo --scenario all --max-turns 2
 ---
 
 ## 8. First Run
+
+### 8.0 Run Preflight Diagnostics
+
+```bash
+python run.py doctor
+```
+
+This checks provider package imports, DB connectivity, and Ollama reachability (when Ollama is selected).
 
 ### 8.1 Index the Built-in Knowledge Base
 
@@ -666,6 +678,30 @@ python run.py migrate [--dotenv PATH]
 ```
 
 Idempotent. Run this after initial setup and after any `schema.sql` changes.
+
+---
+
+### `doctor` — Preflight Providers + Connectivity
+
+```bash
+python run.py doctor [OPTIONS]
+```
+
+| Option | Description |
+|---|---|
+| `--dotenv PATH` | Load a specific `.env` file |
+| `--strict` | Exit non-zero if warnings are present |
+| `--timeout-seconds FLOAT` | Timeout for connectivity checks (default: `3.0`) |
+| `--check-db / --skip-db` | Enable or skip PostgreSQL connectivity check |
+| `--check-ollama / --skip-ollama` | Enable or skip Ollama API check when Ollama providers are selected |
+
+Examples:
+
+```bash
+python run.py doctor
+python run.py doctor --strict
+python run.py doctor --skip-ollama
+```
 
 ---
 
@@ -1242,6 +1278,33 @@ The `pgvector` extension is not loaded. Verify you are using the `pgvector/pgvec
 
 ```bash
 python run.py migrate
+```
+
+---
+
+### `ModuleNotFoundError: No module named 'langchain_ollama'`
+
+This means your current Python environment is missing provider packages required by your selected provider settings (for example `LLM_PROVIDER=ollama`).
+
+Run:
+
+```bash
+python run.py doctor
+```
+
+Host (venv) fix:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install langchain-ollama
+```
+
+Docker fix:
+
+```bash
+docker compose up -d --build app
+docker compose restart app
+docker compose exec app python run.py doctor
 ```
 
 ---

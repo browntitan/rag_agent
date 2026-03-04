@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agentic_chatbot.config import Settings
+from agentic_chatbot.providers.dependency_checks import raise_if_missing_provider_dependencies
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,9 @@ def build_providers(settings: Settings) -> ProviderBundle:
         raise ValueError(f"Unsupported EMBEDDINGS_PROVIDER: {settings.embeddings_provider}")
     if judge_provider not in {"ollama", "azure"}:
         raise ValueError(f"Unsupported JUDGE_PROVIDER: {settings.judge_provider}")
+
+    # Fail fast with actionable instructions before provider imports.
+    raise_if_missing_provider_dependencies(settings)
 
     # --- Chat model ---
     if llm_provider == "ollama":

@@ -97,14 +97,21 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    cli["CLI Layer\n(agentic_chatbot.cli)"]
-    orch["Orchestrator\nChatbotApp.process_turn"]
-    router["Deterministic Router\nroute_message()"]
+    cli["CLI Adapter\nrun.py + Typer commands"]
+    api["API Adapter\nFastAPI /v1 endpoints"]
+    settings["Settings Loader\nload_settings()"]
+    ctx["Context Resolver\nbuild_local_context()"]
 
+    preflight["Provider Dependency Preflight\nvalidate_provider_dependencies()"]
+    providers["Provider Factory\nbuild_providers()"]
+    llm["External AI Provider\nOllama or Azure OpenAI"]
+
+    orch["Orchestrator\nChatbotApp.process_turn()"]
+    router["Deterministic Router\nroute_message()"]
     basic["Basic Chat Agent\nrun_basic_chat()"]
-    graph["Multi-Agent Graph Invoker\nbuild_multi_agent_graph()"]
+    graph["Supervisor Graph Executor\nbuild_multi_agent_graph()"]
     fallback["Legacy Fallback\nrun_general_agent()"]
-    genTools["General Toolset\ncalculator, list_docs, memory_*, rag_agent_tool"]
+    fallbackTools["Fallback Toolset\ncalculator/list_docs/memory_*/rag_agent_tool"]
 
     sup["Supervisor Node"]
     ragNode["RAG Node"]
@@ -114,20 +121,30 @@ flowchart LR
     synth["RAG Synthesizer"]
 
     ragCore["RAG Core\nrun_rag_agent()"]
-    ragTools["RAG Toolset\nsearch/extract/compare/scratchpad"]
-    ingest["Ingestion Pipeline\ningest_paths()"]
+    ragTools["RAG Toolset\nresolve/search/extract/compare/scratchpad"]
+    ingest["Ingestion Pipeline\ningest_paths() + OCR/structure split"]
     stores["Store Layer\nDocumentStore / ChunkStore / MemoryStore"]
-    db["PostgreSQL"]
+    db["PostgreSQL\n(pgvector + pg_trgm)"]
+    fs["Filesystem Sources\ndata/kb, uploads, prompts, skills"]
 
-    providers["Provider Factory\nchat/judge/embeddings"]
-    cb["Langfuse Callback Adapter\nget_langchain_callbacks()"]
-    obs["Langfuse"]
+    callbacks["Langfuse Callback Adapter\nget_langchain_callbacks()"]
+    langfuse["Langfuse (optional)"]
 
+    cli --> settings
+    api --> settings
+    settings --> preflight
+    preflight --> providers
+
+    cli --> ctx
+    api --> ctx
+    ctx --> orch
     cli --> orch
-    cli --> providers
+    api --> orch
 
     orch --> router
-    orch --> cb
+    orch --> callbacks
+    orch --> ingest
+    orch -->|"upload summary kickoff"| ragCore
 
     router -->|"BASIC"| basic
     router -->|"AGENT"| graph
@@ -141,41 +158,45 @@ flowchart LR
     synth --> sup
 
     graph -->|"capability/config error only"| fallback
-    fallback --> genTools
-    genTools --> stores
-    genTools -.->|"via rag_agent_tool"| ragCore
+    fallback --> fallbackTools
+    fallbackTools --> stores
+    fallbackTools -.->|"via rag_agent_tool"| ragCore
 
     ragNode --> ragCore
     worker --> ragCore
-    orch --> ingest
-    orch -->|"upload summary kickoff"| ragCore
-
     ragCore --> ragTools
     ragTools --> stores
     ingest --> stores
     stores --> db
+    ingest --> fs
+    ragCore --> fs
 
-    providers --> ragCore
     providers --> basic
     providers --> graph
     providers --> fallback
+    providers --> ragCore
+    providers --> llm
 
-    cb -.-> basic
-    cb -.-> graph
-    cb -.-> ragCore
-    cb -.-> fallback
-    cb -.-> obs
+    callbacks -.-> basic
+    callbacks -.-> graph
+    callbacks -.-> ragCore
+    callbacks -.-> fallback
+    callbacks -.-> langfuse
 ```
 
 ### Component responsibilities
 
 | Component | Responsibility | Code |
 |---|---|---|
-| CLI Layer | Command entrypoint (`ask/chat/demo/...`) | `run.py`, `src/agentic_chatbot/cli.py` |
+| CLI Adapter | Command entrypoint (`ask/chat/demo/migrate/init-kb/doctor`) | `run.py`, `src/agentic_chatbot/cli.py` |
+| API Adapter | OpenAI-compatible HTTP interface (`/v1/models`, `/v1/chat/completions`, `/v1/ingest/documents`) | `src/agentic_chatbot/api/main.py` |
+| Settings + Context Resolver | Load env config and derive default/local request context | `src/agentic_chatbot/config.py`, `src/agentic_chatbot/context.py` |
+| Provider Dependency Preflight | Verify required provider packages before runtime/provider construction | `src/agentic_chatbot/providers/dependency_checks.py` |
+| Provider Factory | Build chat, judge, and embedding providers | `src/agentic_chatbot/providers/llm_factory.py` |
 | Orchestrator | Turn lifecycle, routing, upload kickoff, callback propagation | `src/agentic_chatbot/agents/orchestrator.py` |
 | Router | Deterministic `BASIC` vs `AGENT` decision | `src/agentic_chatbot/router/router.py` |
 | Basic Chat Agent | Direct LLM response without tools | `src/agentic_chatbot/agents/basic_chat.py` |
-| Multi-Agent Graph | Supervisor-driven specialist orchestration | `src/agentic_chatbot/graph/builder.py`, `src/agentic_chatbot/graph/supervisor.py` |
+| Supervisor Graph Executor | Supervisor-driven specialist orchestration | `src/agentic_chatbot/graph/builder.py`, `src/agentic_chatbot/graph/supervisor.py` |
 | Utility Node | Calculator/list-docs/memory tool loop | `src/agentic_chatbot/graph/nodes/utility_node.py` |
 | RAG Node + Worker(s) | Single and parallel RAG execution adapters | `src/agentic_chatbot/graph/nodes/rag_node.py`, `src/agentic_chatbot/graph/nodes/rag_worker_node.py` |
 | RAG Synthesizer | Merge worker outputs and clear worker state | `src/agentic_chatbot/graph/nodes/rag_synthesizer_node.py`, `src/agentic_chatbot/graph/state.py` |
@@ -184,8 +205,9 @@ flowchart LR
 | RAG Tools | Retrieval, extraction, comparison, scratchpad operations | `src/agentic_chatbot/tools/rag_tools.py` |
 | Ingestion Pipeline | File loading, OCR fallback, structure-aware chunking | `src/agentic_chatbot/rag/ingest.py`, `src/agentic_chatbot/rag/ocr.py` |
 | Store Layer | PostgreSQL-backed document/chunk/memory IO | `src/agentic_chatbot/db/document_store.py`, `src/agentic_chatbot/db/chunk_store.py`, `src/agentic_chatbot/db/memory_store.py` |
-| Provider Factory | Builds chat, judge, embeddings providers | `src/agentic_chatbot/providers/llm_factory.py` |
 | Callback Adapter | LangChain/LangGraph callback construction | `src/agentic_chatbot/observability/callbacks.py` |
+
+Provider dependency preflight now gates runtime initialization in both CLI and API startup paths. If required packages are missing, runtime construction fails fast with explicit remediation instructions.
 
 ---
 
