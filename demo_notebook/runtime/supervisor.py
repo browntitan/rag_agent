@@ -55,6 +55,16 @@ def make_supervisor_node(
         nonlocal loop_counter
         loop_counter += 1
 
+        # Deterministic termination guard:
+        # if a specialist already produced a final answer, stop routing loops.
+        final_answer = str(state.get("final_answer") or "").strip()
+        if final_answer:
+            return {
+                "next_agent": "__end__",
+                "final_answer": final_answer,
+                "messages": [AIMessage(content=final_answer)],
+            }
+
         if loop_counter > max_loops:
             return {
                 "next_agent": "__end__",
