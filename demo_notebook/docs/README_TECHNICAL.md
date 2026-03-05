@@ -54,6 +54,15 @@ Set `NOTEBOOK_PROVIDER` in `.env`:
 
 Key vars are documented in `/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/.env.example`.
 
+### Corporate TLS note
+
+For Azure/vLLM SSL interception or private CA environments:
+- `NOTEBOOK_HTTP2=true`
+- `NOTEBOOK_SSL_VERIFY=true`
+- `NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem`
+
+Fallback (not recommended): `NOTEBOOK_SSL_VERIFY=false`.
+
 ## 5) Database schema
 
 The notebook runtime uses its own schema objects:

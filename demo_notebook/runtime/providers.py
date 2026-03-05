@@ -54,6 +54,22 @@ class LocalHashEmbeddings(Embeddings):
         return self._embed_text(text)
 
 
+def _build_httpx_client(settings: NotebookSettings):
+    import httpx
+
+    verify: bool | str = True
+    if not settings.ssl_verify:
+        verify = False
+    elif settings.ssl_cert_file:
+        verify = str(settings.ssl_cert_file)
+
+    return httpx.Client(
+        http2=settings.http2_enabled,
+        verify=verify,
+        timeout=httpx.Timeout(60.0, connect=20.0),
+    )
+
+
 def _build_azure(settings: NotebookSettings) -> ProviderBundle:
     from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
@@ -71,12 +87,15 @@ def _build_azure(settings: NotebookSettings) -> ProviderBundle:
     if missing:
         raise ValueError(f"Azure provider missing required settings: {', '.join(missing)}")
 
+    http_client = _build_httpx_client(settings)
+
     chat = AzureChatOpenAI(
         api_key=settings.azure_api_key,
         azure_endpoint=settings.azure_endpoint,
         api_version=settings.azure_api_version,
         azure_deployment=settings.azure_chat_deployment,
         temperature=settings.temperature,
+        http_client=http_client,
     )
     judge = AzureChatOpenAI(
         api_key=settings.azure_api_key,
@@ -84,12 +103,14 @@ def _build_azure(settings: NotebookSettings) -> ProviderBundle:
         api_version=settings.azure_api_version,
         azure_deployment=settings.azure_judge_deployment,
         temperature=settings.judge_temperature,
+        http_client=http_client,
     )
     embeddings = AzureOpenAIEmbeddings(
         api_key=settings.azure_api_key,
         azure_endpoint=settings.azure_endpoint,
         api_version=settings.azure_api_version,
         azure_deployment=settings.azure_embed_deployment,
+        http_client=http_client,
     )
     return ProviderBundle(chat=chat, judge=judge, embeddings=embeddings)
 
@@ -127,12 +148,14 @@ def _build_vllm(settings: NotebookSettings) -> ProviderBundle:
     base_url = settings.vllm_base_url.rstrip("/")
     if not base_url.endswith("/v1"):
         base_url = f"{base_url}/v1"
+    http_client = _build_httpx_client(settings)
 
     chat = ChatOpenAI(
         base_url=base_url,
         api_key=settings.vllm_api_key or "not-required",
         model=settings.vllm_chat_model,
         temperature=settings.temperature,
+        http_client=http_client,
     )
 
     judge_model = settings.vllm_judge_model or settings.vllm_chat_model
@@ -141,6 +164,7 @@ def _build_vllm(settings: NotebookSettings) -> ProviderBundle:
         api_key=settings.vllm_api_key or "not-required",
         model=judge_model,
         temperature=settings.judge_temperature,
+        http_client=http_client,
     )
 
     if settings.vllm_use_openai_embeddings and settings.vllm_embed_model:
@@ -148,6 +172,7 @@ def _build_vllm(settings: NotebookSettings) -> ProviderBundle:
             base_url=base_url,
             api_key=settings.vllm_api_key or "not-required",
             model=settings.vllm_embed_model,
+            http_client=http_client,
         )
     else:
         embeddings = LocalHashEmbeddings(dim=settings.embedding_dim)

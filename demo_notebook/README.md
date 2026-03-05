@@ -99,6 +99,26 @@ NOTEBOOK_AZURE_JUDGE_DEPLOYMENT=gpt-4o
 NOTEBOOK_AZURE_EMBED_DEPLOYMENT=text-embedding-ada-002
 ```
 
+## Corporate SSL / TLS Certificates
+
+If your company network requires a custom CA cert, set these in `demo_notebook/.env`:
+
+```env
+NOTEBOOK_HTTP2=true
+NOTEBOOK_SSL_VERIFY=true
+NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+```
+
+This is wired in [providers.py](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/runtime/providers.py) and applies to Azure/vLLM HTTP clients.
+
+If your company environment only works with SSL verification disabled, you can use:
+
+```env
+NOTEBOOK_SSL_VERIFY=false
+```
+
+This matches your previous `httpx.Client(http2=True, verify=False)` behavior, but use it only as a last resort.
+
 ## Ollama Setup
 
 In `demo_notebook/.env` set:

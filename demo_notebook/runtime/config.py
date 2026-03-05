@@ -27,6 +27,9 @@ class NotebookSettings:
     max_tool_calls: int
     temperature: float
     judge_temperature: float
+    http2_enabled: bool
+    ssl_verify: bool
+    ssl_cert_file: Optional[Path]
 
     # Skills / showcase toggles
     skills_enabled: bool
@@ -116,6 +119,8 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         str(_getenv("NOTEBOOK_SKILLS_DIR", "./skills")),
         base=demo_root,
     )
+    ssl_cert_raw = _getenv("NOTEBOOK_SSL_CERT_FILE")
+    ssl_cert_file = _resolve_path(ssl_cert_raw, base=demo_root) if ssl_cert_raw else None
 
     settings = NotebookSettings(
         provider_mode=provider_mode,
@@ -133,6 +138,9 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         max_tool_calls=_as_int("NOTEBOOK_MAX_TOOL_CALLS", 10),
         temperature=_as_float("NOTEBOOK_TEMPERATURE", 0.2),
         judge_temperature=_as_float("NOTEBOOK_JUDGE_TEMPERATURE", 0.0),
+        http2_enabled=_as_bool("NOTEBOOK_HTTP2", True),
+        ssl_verify=_as_bool("NOTEBOOK_SSL_VERIFY", True),
+        ssl_cert_file=ssl_cert_file,
         skills_enabled=_as_bool("NOTEBOOK_SKILLS_ENABLED", True),
         skills_showcase_mode=_as_bool("NOTEBOOK_SKILLS_SHOWCASE_MODE", False),
         azure_endpoint=_getenv("NOTEBOOK_AZURE_ENDPOINT"),
