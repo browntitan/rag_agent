@@ -1,0 +1,37 @@
+name: demo-notebook
+
+services:
+  notebook-postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NOTEBOOK_DOCKER_PG_DB:-ragdb}
+      POSTGRES_USER: ${NOTEBOOK_DOCKER_PG_USER:-raguser}
+      POSTGRES_PASSWORD: ${NOTEBOOK_DOCKER_PG_PASSWORD:-ragpass}
+    ports:
+      - "${NOTEBOOK_DOCKER_PG_PORT:-5432}:5432"
+    volumes:
+      - notebook_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${NOTEBOOK_DOCKER_PG_USER:-raguser} -d ${NOTEBOOK_DOCKER_PG_DB:-ragdb}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  notebook-ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "${NOTEBOOK_DOCKER_OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - notebook_ollama_data:/root/.ollama
+      - ./data/ollama/gguf:/gguf
+
+volumes:
+  notebook_pg_data:
+  notebook_ollama_data:

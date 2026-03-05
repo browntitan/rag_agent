@@ -17,7 +17,7 @@ It is intentionally isolated from the production app runtime.
 - Existing KB files under `../data/kb` are reused as input corpus.
 - Removing this folder removes the deliverable.
 
-## Quickstart
+## Quickstart (New Machine)
 
 1. Create a notebook env and install dependencies:
 
@@ -27,12 +27,22 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
+cp .env.example .env
+python scripts/check_isolation.py
 ```
 
-2. Configure settings:
+2. Start required Docker services from repository root:
 
 ```bash
-cp .env.example .env
+docker compose -f demo_notebook/docker-compose.yml up -d notebook-postgres
+```
+
+3. Launch notebook:
+
+```bash
+cd demo_notebook
+source .venv/bin/activate
+jupyter notebook agentic_rag_showcase.ipynb
 ```
 
 Optional skills showcase toggles in `.env`:
@@ -43,43 +53,138 @@ NOTEBOOK_SKILLS_DIR=./skills
 NOTEBOOK_SKILLS_SHOWCASE_MODE=false
 ```
 
-3. Run isolation check:
+## Docker for demo_notebook
+
+Compose file: [docker-compose.yml](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docker-compose.yml)
+
+- `notebook-postgres` is required for all modes.
+- `notebook-ollama` is optional and only needed when you run Ollama mode in a container.
+
+Start Postgres only:
 
 ```bash
-python scripts/check_isolation.py
+docker compose -f demo_notebook/docker-compose.yml up -d notebook-postgres
 ```
 
-4. Launch Jupyter:
+Start Postgres + Ollama:
 
 ```bash
-jupyter notebook agentic_rag_showcase.ipynb
+docker compose -f demo_notebook/docker-compose.yml --profile ollama up -d notebook-postgres notebook-ollama
 ```
 
-## Runtime prerequisites
+Check status:
 
-- PostgreSQL with pgvector reachable via `NOTEBOOK_PG_DSN`.
-- KB files available under `NOTEBOOK_KB_DIR` (default `../data/kb`).
-- Provider endpoint configured for chosen `NOTEBOOK_PROVIDER`.
+```bash
+docker compose -f demo_notebook/docker-compose.yml ps
+```
 
-## Provider modes
+Stop services:
 
-### Azure
-Set `NOTEBOOK_PROVIDER=azure` and configure:
-- `NOTEBOOK_AZURE_API_KEY`
-- `NOTEBOOK_AZURE_ENDPOINT` (Gov endpoints like `*.openai.azure.us` are valid)
-- `NOTEBOOK_AZURE_CHAT_DEPLOYMENT`
-- `NOTEBOOK_AZURE_JUDGE_DEPLOYMENT`
-- `NOTEBOOK_AZURE_EMBED_DEPLOYMENT`
+```bash
+docker compose -f demo_notebook/docker-compose.yml down
+```
 
-### Ollama
-Set `NOTEBOOK_PROVIDER=ollama` and configure:
-- `NOTEBOOK_OLLAMA_BASE_URL`
-- `NOTEBOOK_OLLAMA_CHAT_MODEL`
-- `NOTEBOOK_OLLAMA_JUDGE_MODEL`
-- `NOTEBOOK_OLLAMA_EMBED_MODEL`
-- `NOTEBOOK_EMBEDDING_DIM` (set `768` for `nomic-embed-text`)
+## Azure Setup
 
-### vLLM
+Use Docker only for Postgres. In `demo_notebook/.env` set:
+
+```env
+NOTEBOOK_PROVIDER=azure
+NOTEBOOK_PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+NOTEBOOK_EMBEDDING_DIM=1536
+NOTEBOOK_AZURE_API_KEY=...
+NOTEBOOK_AZURE_ENDPOINT=https://YOUR-RESOURCE.openai.azure.us/
+NOTEBOOK_AZURE_CHAT_DEPLOYMENT=gpt-4o
+NOTEBOOK_AZURE_JUDGE_DEPLOYMENT=gpt-4o
+NOTEBOOK_AZURE_EMBED_DEPLOYMENT=text-embedding-ada-002
+```
+
+## Ollama Setup
+
+In `demo_notebook/.env` set:
+
+```env
+NOTEBOOK_PROVIDER=ollama
+NOTEBOOK_PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+NOTEBOOK_OLLAMA_EMBED_MODEL=nomic-embed-text
+NOTEBOOK_EMBEDDING_DIM=768
+```
+
+Use one Ollama path:
+
+1. Host Ollama app:
+- `NOTEBOOK_OLLAMA_BASE_URL=http://localhost:11434`
+- Install models on host:
+
+```bash
+ollama pull qwen3:8b
+ollama pull nomic-embed-text
+```
+
+2. Docker Ollama container:
+- Start with compose profile:
+
+```bash
+docker compose -f demo_notebook/docker-compose.yml --profile ollama up -d notebook-ollama
+```
+
+- `NOTEBOOK_OLLAMA_BASE_URL=http://localhost:11434`
+
+## Host Model Files -> Ollama Container (GGUF Import)
+
+Use this when you download model files on host and want to import them into the container.
+
+1. Put files in [data/ollama/gguf](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/data/ollama/gguf):
+- your `.gguf` file
+- a `Modelfile`
+
+Example host download commands:
+
+```bash
+# Option A: direct URL
+curl -L -o demo_notebook/data/ollama/gguf/qwen3-8b-q4_k_m.gguf <GGUF_DOWNLOAD_URL>
+
+# Option B: huggingface-cli
+huggingface-cli download <repo-id> <file.gguf> \
+  --local-dir demo_notebook/data/ollama/gguf
+```
+
+Example `Modelfile`:
+
+```text
+FROM /gguf/qwen3-8b-q4_k_m.gguf
+PARAMETER num_ctx 8192
+PARAMETER temperature 0.2
+```
+
+2. Start container Ollama:
+
+```bash
+docker compose -f demo_notebook/docker-compose.yml --profile ollama up -d notebook-ollama
+```
+
+3. Create model inside container from mounted host files:
+
+```bash
+docker compose -f demo_notebook/docker-compose.yml exec notebook-ollama \
+  ollama create qwen3-8b-local -f /gguf/Modelfile
+```
+
+4. Verify model exists:
+
+```bash
+docker compose -f demo_notebook/docker-compose.yml exec notebook-ollama ollama list
+```
+
+5. Point notebook to that model:
+
+```env
+NOTEBOOK_OLLAMA_CHAT_MODEL=qwen3-8b-local
+NOTEBOOK_OLLAMA_JUDGE_MODEL=qwen3-8b-local
+```
+
+## vLLM Setup
+
 Set `NOTEBOOK_PROVIDER=vllm` and configure:
 - `NOTEBOOK_VLLM_BASE_URL`
 - `NOTEBOOK_VLLM_CHAT_MODEL`
