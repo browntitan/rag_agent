@@ -111,6 +111,8 @@ def _build_azure(settings: NotebookSettings) -> ProviderBundle:
         api_version=settings.azure_api_version,
         azure_deployment=settings.azure_embed_deployment,
         http_client=http_client,
+        tiktoken_enabled=settings.tiktoken_enabled,
+        check_embedding_ctx_length=settings.tiktoken_enabled,
     )
     return ProviderBundle(chat=chat, judge=judge, embeddings=embeddings)
 
@@ -173,6 +175,8 @@ def _build_vllm(settings: NotebookSettings) -> ProviderBundle:
             api_key=settings.vllm_api_key or "not-required",
             model=settings.vllm_embed_model,
             http_client=http_client,
+            tiktoken_enabled=settings.tiktoken_enabled,
+            check_embedding_ctx_length=settings.tiktoken_enabled,
         )
     else:
         embeddings = LocalHashEmbeddings(dim=settings.embedding_dim)

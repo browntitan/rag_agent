@@ -110,6 +110,7 @@ NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem
 ```
 
 This is wired in [providers.py](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/runtime/providers.py) and applies to Azure/vLLM HTTP clients.
+It also sets `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` for non-httpx download paths (including `tiktoken`).
 
 If your company environment only works with SSL verification disabled, you can use:
 
@@ -118,6 +119,32 @@ NOTEBOOK_SSL_VERIFY=false
 ```
 
 This matches your previous `httpx.Client(http2=True, verify=False)` behavior, but use it only as a last resort.
+
+### tiktoken download errors
+
+`tiktoken` may download encoding files at runtime in Azure/vLLM embedding flows.
+
+Use local cache to avoid network download:
+
+```env
+NOTEBOOK_TIKTOKEN_ENABLED=true
+NOTEBOOK_TIKTOKEN_CACHE_DIR=./.cache/tiktoken
+```
+
+If you want to bypass `tiktoken` entirely in embedding calls:
+
+```env
+NOTEBOOK_TIKTOKEN_ENABLED=false
+```
+
+### Windows path format in `.env`
+
+For paths with spaces, wrap value in double quotes and prefer forward slashes:
+
+```env
+NOTEBOOK_SSL_CERT_FILE=\"C:/Users/you/Company Certificates/corp-root-ca.pem\"
+NOTEBOOK_TIKTOKEN_CACHE_DIR=\"C:/Users/you/AppData/Local/tiktoken cache\"
+```
 
 ## Ollama Setup
 

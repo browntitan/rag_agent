@@ -30,6 +30,8 @@ class NotebookSettings:
     http2_enabled: bool
     ssl_verify: bool
     ssl_cert_file: Optional[Path]
+    tiktoken_enabled: bool
+    tiktoken_cache_dir: Optional[Path]
 
     # Skills / showcase toggles
     skills_enabled: bool
@@ -121,6 +123,18 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
     )
     ssl_cert_raw = _getenv("NOTEBOOK_SSL_CERT_FILE")
     ssl_cert_file = _resolve_path(ssl_cert_raw, base=demo_root) if ssl_cert_raw else None
+    tiktoken_cache_raw = _getenv("NOTEBOOK_TIKTOKEN_CACHE_DIR")
+    tiktoken_cache_dir = _resolve_path(tiktoken_cache_raw, base=demo_root) if tiktoken_cache_raw else None
+
+    if ssl_cert_file and _as_bool("NOTEBOOK_SSL_VERIFY", True):
+        # Ensure non-httpx code paths (e.g. tiktoken/urllib) use the same CA bundle.
+        os.environ["SSL_CERT_FILE"] = str(ssl_cert_file)
+        os.environ["REQUESTS_CA_BUNDLE"] = str(ssl_cert_file)
+        os.environ["CURL_CA_BUNDLE"] = str(ssl_cert_file)
+
+    if tiktoken_cache_dir:
+        tiktoken_cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache_dir)
 
     settings = NotebookSettings(
         provider_mode=provider_mode,
@@ -141,6 +155,8 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         http2_enabled=_as_bool("NOTEBOOK_HTTP2", True),
         ssl_verify=_as_bool("NOTEBOOK_SSL_VERIFY", True),
         ssl_cert_file=ssl_cert_file,
+        tiktoken_enabled=_as_bool("NOTEBOOK_TIKTOKEN_ENABLED", True),
+        tiktoken_cache_dir=tiktoken_cache_dir,
         skills_enabled=_as_bool("NOTEBOOK_SKILLS_ENABLED", True),
         skills_showcase_mode=_as_bool("NOTEBOOK_SKILLS_SHOWCASE_MODE", False),
         azure_endpoint=_getenv("NOTEBOOK_AZURE_ENDPOINT"),

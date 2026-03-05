@@ -60,8 +60,10 @@ For Azure/vLLM SSL interception or private CA environments:
 - `NOTEBOOK_HTTP2=true`
 - `NOTEBOOK_SSL_VERIFY=true`
 - `NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem`
+- `NOTEBOOK_TIKTOKEN_CACHE_DIR=./.cache/tiktoken` (avoid runtime encoding download failures)
 
 Fallback (not recommended): `NOTEBOOK_SSL_VERIFY=false`.
+For embedding paths only: `NOTEBOOK_TIKTOKEN_ENABLED=false` bypasses tiktoken tokenization.
 
 ## 5) Database schema
 
