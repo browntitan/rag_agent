@@ -17,9 +17,9 @@ class Settings:
     prompts_backend: str        # local | s3 | azure_blob (future)
 
     # --- Providers ---
-    llm_provider: str  # ollama | azure
+    llm_provider: str  # ollama | azure | nvidia
     embeddings_provider: str  # ollama | azure
-    judge_provider: str  # ollama | azure (defaults to llm_provider)
+    judge_provider: str  # ollama | azure | nvidia (defaults to llm_provider)
 
     # --- Ollama ---
     ollama_base_url: str
@@ -39,6 +39,11 @@ class Settings:
     azure_openai_embed_deployment: str | None
     azure_temperature: float
     judge_temperature: float
+    nvidia_openai_endpoint: str | None
+    nvidia_api_token: str | None
+    nvidia_chat_model: str | None
+    nvidia_judge_model: str | None
+    nvidia_temperature: float
     http2_enabled: bool
     ssl_verify: bool
     ssl_cert_file: Path | None
@@ -192,6 +197,11 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         _getenv("AZURE_OPENAI_EMBED_DEPLOYMENT"),
     )
     azure_temperature = _as_float("AZURE_TEMPERATURE", 0.2)
+    nvidia_openai_endpoint = _getenv("NVIDIA_OPENAI_ENDPOINT")
+    nvidia_api_token = _getenv("NVIDIA_API_TOKEN", _getenv("Token"))
+    nvidia_chat_model = _getenv("NVIDIA_CHAT_MODEL")
+    nvidia_judge_model = _getenv("NVIDIA_JUDGE_MODEL", nvidia_chat_model)
+    nvidia_temperature = _as_float("NVIDIA_TEMPERATURE", 0.0)
     judge_temperature = _as_float("JUDGE_TEMPERATURE", 0.0)
     http2_enabled = _as_bool("HTTP2_ENABLED", True)
     ssl_verify = _as_bool("SSL_VERIFY", True)
@@ -319,6 +329,11 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         azure_openai_judge_deployment=azure_openai_judge_deployment,
         azure_openai_embed_deployment=azure_openai_embed_deployment,
         azure_temperature=azure_temperature,
+        nvidia_openai_endpoint=nvidia_openai_endpoint,
+        nvidia_api_token=nvidia_api_token,
+        nvidia_chat_model=nvidia_chat_model,
+        nvidia_judge_model=nvidia_judge_model,
+        nvidia_temperature=nvidia_temperature,
         judge_temperature=judge_temperature,
         http2_enabled=http2_enabled,
         ssl_verify=ssl_verify,

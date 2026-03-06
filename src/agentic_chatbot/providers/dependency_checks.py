@@ -40,7 +40,7 @@ def _required_module_map(settings: Settings) -> Dict[str, Set[str]]:
     for context, provider in provider_by_context.items():
         if provider == "ollama":
             required.setdefault("langchain_ollama", set()).add(context)
-        elif provider == "azure":
+        elif provider in {"azure", "nvidia"}:
             required.setdefault("langchain_openai", set()).add(context)
 
     return required
@@ -80,6 +80,15 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
         "judge": settings.judge_provider.lower(),
         "embeddings": settings.embeddings_provider.lower(),
     }
+
+    if provider_by_context["embeddings"] == "nvidia":
+        issues.append(
+            ProviderConfigIssue(
+                context="embeddings",
+                message="EMBEDDINGS_PROVIDER=nvidia is not supported in v1.",
+                hint="Use EMBEDDINGS_PROVIDER=azure or EMBEDDINGS_PROVIDER=ollama.",
+            )
+        )
 
     if settings.ssl_cert_file and not settings.ssl_cert_file.exists():
         issues.append(
@@ -151,6 +160,52 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
                     f"(current: {settings.embedding_dim})."
                 ),
                 hint="Set EMBEDDING_DIM=1536 and run `python run.py migrate-embedding-dim --yes` to rebuild vectors.",
+            )
+        )
+
+    uses_nvidia = any(p == "nvidia" for p in provider_by_context.values())
+    if uses_nvidia:
+        parsed = urlparse((settings.nvidia_openai_endpoint or "").strip())
+        if not settings.nvidia_openai_endpoint:
+            issues.append(
+                ProviderConfigIssue(
+                    context="nvidia",
+                    message="Missing NVIDIA_OPENAI_ENDPOINT.",
+                    hint="Set NVIDIA_OPENAI_ENDPOINT to your OpenAI-compatible base URL.",
+                )
+            )
+        elif parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            issues.append(
+                ProviderConfigIssue(
+                    context="nvidia",
+                    message="NVIDIA_OPENAI_ENDPOINT must be a valid http(s) URL.",
+                    hint="Use endpoint format like https://<host>/v1.",
+                )
+            )
+
+        if not settings.nvidia_api_token:
+            issues.append(
+                ProviderConfigIssue(
+                    context="nvidia",
+                    message="Missing NVIDIA_API_TOKEN (or legacy Token).",
+                    hint="Set NVIDIA_API_TOKEN in .env.",
+                )
+            )
+
+    if provider_by_context["llm"] == "nvidia" and not settings.nvidia_chat_model:
+        issues.append(
+            ProviderConfigIssue(
+                context="llm",
+                message="Missing NVIDIA_CHAT_MODEL for LLM_PROVIDER=nvidia.",
+                hint="Set NVIDIA_CHAT_MODEL in .env.",
+            )
+        )
+    if provider_by_context["judge"] == "nvidia" and not settings.nvidia_judge_model:
+        issues.append(
+            ProviderConfigIssue(
+                context="judge",
+                message="Missing NVIDIA_JUDGE_MODEL for JUDGE_PROVIDER=nvidia.",
+                hint="Set NVIDIA_JUDGE_MODEL (or NVIDIA_CHAT_MODEL) in .env.",
             )
         )
 

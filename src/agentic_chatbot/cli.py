@@ -378,6 +378,7 @@ def doctor(
     }
     needs_ollama = "ollama" in provider_set
     needs_azure = "azure" in provider_set
+    needs_nvidia = "nvidia" in provider_set
 
     config_lines = [
         f"LLM_PROVIDER={settings.llm_provider}",
@@ -400,6 +401,15 @@ def doctor(
                 f"AZURE_OPENAI_CHAT_DEPLOYMENT={settings.azure_openai_chat_deployment or '<unset>'}",
                 f"AZURE_OPENAI_JUDGE_DEPLOYMENT={settings.azure_openai_judge_deployment or '<unset>'}",
                 f"AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT={settings.azure_openai_embed_deployment or '<unset>'}",
+            ]
+        )
+    if needs_nvidia:
+        config_lines.extend(
+            [
+                f"NVIDIA_OPENAI_ENDPOINT={settings.nvidia_openai_endpoint or '<unset>'}",
+                f"NVIDIA_CHAT_MODEL={settings.nvidia_chat_model or '<unset>'}",
+                f"NVIDIA_JUDGE_MODEL={settings.nvidia_judge_model or '<unset>'}",
+                f"NVIDIA_API_TOKEN={'<set>' if settings.nvidia_api_token else '<unset>'}",
             ]
         )
     console.print(Panel("\n".join(config_lines), title="Selected Configuration"))
@@ -430,7 +440,11 @@ def doctor(
     config_issues = validate_provider_configuration(settings)
     if config_issues:
         details = "; ".join(f"({issue.context}) {issue.message}" for issue in config_issues)
-        remediation = "Fix provider variables in .env (Azure Gov endpoints like https://<resource>.openai.azure.us are supported)."
+        remediation = (
+            "Fix provider variables in .env "
+            "(Azure Gov endpoints like https://<resource>.openai.azure.us are supported; "
+            "NVIDIA endpoints should be OpenAI-compatible base URLs)."
+        )
         checks.append(
             DoctorCheckResult(
                 name="Provider runtime configuration",

@@ -4,8 +4,8 @@
 
 Supported today:
 
-- chat LLM: `ollama` or `azure`
-- judge LLM: `ollama` or `azure`
+- chat LLM: `ollama`, `azure`, or `nvidia`
+- judge LLM: `ollama`, `azure`, or `nvidia`
 - embeddings: `ollama` or `azure`
 
 Azure is the default demo path in `.env.example`.
@@ -68,6 +68,30 @@ OLLAMA_TEMPERATURE=0.2
 JUDGE_TEMPERATURE=0.0
 EMBEDDING_DIM=768
 ```
+
+## NVIDIA OpenAI-Compatible Endpoint (Chat/Judge Only)
+
+```bash
+LLM_PROVIDER=nvidia
+JUDGE_PROVIDER=nvidia
+EMBEDDINGS_PROVIDER=ollama   # or azure
+
+NVIDIA_OPENAI_ENDPOINT=https://<your-nvidia-endpoint>/v1
+NVIDIA_API_TOKEN=<bearer-token>
+NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+NVIDIA_TEMPERATURE=0.0
+
+HTTP2_ENABLED=true
+SSL_VERIFY=false
+```
+
+Notes:
+
+- Authentication is sent as `Authorization: Bearer <token>`.
+- `NVIDIA_API_TOKEN` is preferred; legacy `Token` env var is also accepted.
+- Endpoint is normalized to include `/v1` if omitted.
+- Embeddings remain `ollama|azure` in v1. `EMBEDDINGS_PROVIDER=nvidia` is intentionally rejected by config validation.
 
 ## GGUF with Ollama
 
