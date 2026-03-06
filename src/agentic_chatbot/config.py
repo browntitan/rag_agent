@@ -156,7 +156,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     skills_backend = str(_getenv("SKILLS_BACKEND", "local")).lower()
     prompts_backend = str(_getenv("PROMPTS_BACKEND", "local")).lower()
 
-    llm_provider = str(_getenv("LLM_PROVIDER", "ollama")).lower()
+    llm_provider = str(_getenv("LLM_PROVIDER", "azure")).lower()
     embeddings_provider = str(_getenv("EMBEDDINGS_PROVIDER", llm_provider)).lower()
     judge_provider = str(_getenv("JUDGE_PROVIDER", llm_provider)).lower()
 
@@ -173,9 +173,12 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     azure_openai_api_key = _getenv("AZURE_OPENAI_API_KEY")
     azure_openai_endpoint = _getenv("AZURE_OPENAI_ENDPOINT")
     azure_openai_api_version = _getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-    azure_openai_chat_deployment = _getenv("AZURE_OPENAI_DEPLOYMENT")
+    azure_openai_chat_deployment = _getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", _getenv("AZURE_OPENAI_DEPLOYMENT"))
     azure_openai_judge_deployment = _getenv("AZURE_OPENAI_JUDGE_DEPLOYMENT", azure_openai_chat_deployment)
-    azure_openai_embed_deployment = _getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
+    azure_openai_embed_deployment = _getenv(
+        "AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT",
+        _getenv("AZURE_OPENAI_EMBED_DEPLOYMENT"),
+    )
     azure_temperature = _as_float("AZURE_TEMPERATURE", 0.2)
     judge_temperature = _as_float("JUDGE_TEMPERATURE", 0.0)
 
@@ -196,7 +199,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
 
     # PostgreSQL
     pg_dsn = str(_getenv("PG_DSN", "postgresql://localhost:5432/ragdb"))
-    embedding_dim = _as_int("EMBEDDING_DIM", 768)
+    embedding_dim = _as_int("EMBEDDING_DIM", 1536)
 
     # Paths
     kb_dir = Path(_getenv("KB_DIR", str(data_dir / "kb")))

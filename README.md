@@ -98,7 +98,7 @@ Detailed C4 diagrams (including Level 3 runtime components) are in
 | Requirement | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | 3.11 recommended |
-| Docker | 24+ | For PostgreSQL and Ollama containers |
+| Docker | 24+ | For PostgreSQL and optional Ollama containers |
 | Ollama **or** Azure OpenAI | — | One is required |
 | PostgreSQL 15/16 with pgvector | — | Easiest via Docker (see below) |
 | LangGraph | `>=0.2.0` | Installed automatically via `requirements.txt` |
@@ -123,16 +123,19 @@ Quick start:
 ```bash
 cp .env.example .env
 
-# Full local stack: app gateway + pgvector + Ollama
+# Azure-first stack: app gateway + pgvector
+docker compose up -d --build
+
+# Optional: include Ollama runtime locally
 docker compose --profile ollama up -d --build
 
 # Optional observability stack (Langfuse + deps)
-docker compose --profile ollama --profile observability up -d --build
+docker compose --profile observability up -d --build
 ```
 
 This works even if PostgreSQL is not installed on your machine; `rag-postgres` runs inside Docker and the app connects to it automatically.
 
-If using local Ollama, pull models once:
+Ollama models are never pulled/created automatically during image build or container startup. If using local Ollama, pull/create models manually:
 
 ```bash
 docker compose exec ollama ollama pull nomic-embed-text
@@ -154,11 +157,7 @@ docker compose exec app python run.py ask -q "What does the API auth doc say?"
 docker compose exec app python run.py demo --list-scenarios
 ```
 
-If you use Azure OpenAI instead of Ollama:
-
-```bash
-docker compose up -d --build
-```
+If you need one-shot GGUF auto-import, it is explicit opt-in via profile `ollama-import` and env flags.
 
 ### 4.1 PostgreSQL with pgvector (Required)
 
@@ -196,7 +195,7 @@ If you run the app itself via Docker Compose, this host-based `PG_DSN` is overri
 postgresql://raguser:ragpass@rag-postgres:5432/ragdb
 ```
 
-### 4.2 Ollama (Required if not using Azure)
+### 4.2 Ollama (Optional)
 
 Ollama serves the local LLM and embedding model.
 
@@ -246,6 +245,12 @@ Optional compose auto-import (one-shot helper service):
 OLLAMA_GGUF_AUTO_IMPORT=true
 OLLAMA_GGUF_MODEL_NAME=my-gguf-model
 OLLAMA_GGUF_MODELFILE=/gguf/Modelfile
+```
+
+Run importer explicitly:
+
+```bash
+docker compose --profile ollama --profile ollama-import up ollama-gguf-importer
 ```
 
 Verify Ollama is accessible:
@@ -417,45 +422,48 @@ OBJECT_STORE_BACKEND=local
 SKILLS_BACKEND=local
 PROMPTS_BACKEND=local
 
-# ── Provider (choose one) ─────────────────────────────────────────
-LLM_PROVIDER=ollama
-JUDGE_PROVIDER=ollama
-EMBEDDINGS_PROVIDER=ollama
-
-# ── Ollama ────────────────────────────────────────────────────────
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=qwen3:8b           # or whichever model you pulled
-OLLAMA_JUDGE_MODEL=qwen3:8b
-OLLAMA_EMBED_MODEL=nomic-embed-text
-OLLAMA_NUM_PREDICT=2048
-DEMO_OLLAMA_NUM_PREDICT=2048         # demo command only
-
-# ── Database ──────────────────────────────────────────────────────
-PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
-EMBEDDING_DIM=768                     # must match the embed model output
-```
-
-If you run backend commands in the `app` container, Compose injects an internal `PG_DSN` to the `rag-postgres` service automatically.
-
-### 6.2 Using Azure OpenAI Instead of Ollama
-
-```env
+# ── Provider (Azure-first demo defaults) ──────────────────────────
 LLM_PROVIDER=azure
 JUDGE_PROVIDER=azure
 EMBEDDINGS_PROVIDER=azure
 
+# ── Azure OpenAI (Gov endpoints supported) ───────────────────────
 AZURE_OPENAI_API_KEY=<your-key>
-AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.us/
 AZURE_OPENAI_API_VERSION=2024-05-01-preview
-AZURE_OPENAI_DEPLOYMENT=gpt-4o           # chat deployment name
-AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o-mini
-AZURE_OPENAI_EMBED_DEPLOYMENT=text-embedding-ada-002
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
 
-# Azure ada-002 embeddings output 1536 dims — must update this:
-EMBEDDING_DIM=1536
+# ── Database ──────────────────────────────────────────────────────
+PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+EMBEDDING_DIM=1536                    # required for text-embedding-ada-002
 ```
 
-> **Important:** If you change `EMBEDDING_DIM`, you must also edit `src/agentic_chatbot/db/schema.sql` and change `vector(768)` to `vector(1536)` before running `migrate`. If you have existing data, run `reset-indexes --yes` first.
+Legacy aliases are still accepted: `AZURE_OPENAI_DEPLOYMENT` (chat) and `AZURE_OPENAI_EMBED_DEPLOYMENT` (embeddings).
+
+If you run backend commands in the `app` container, Compose injects an internal `PG_DSN` to the `rag-postgres` service automatically.
+
+### 6.2 Using Ollama Instead of Azure (Optional)
+
+```env
+LLM_PROVIDER=ollama
+JUDGE_PROVIDER=ollama
+EMBEDDINGS_PROVIDER=ollama
+
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=qwen3:8b
+OLLAMA_JUDGE_MODEL=qwen3:8b
+OLLAMA_EMBED_MODEL=nomic-embed-text
+OLLAMA_NUM_PREDICT=2048
+DEMO_OLLAMA_NUM_PREDICT=2048
+
+# nomic-embed-text outputs 768 dims:
+EMBEDDING_DIM=768
+```
+
+> **Important:** If you change embedding models/dimensions on an existing DB, run:
+> `python run.py migrate-embedding-dim --yes`
 
 ### 6.3 Skills and Prompt Template Paths
 
@@ -684,6 +692,17 @@ python run.py migrate [--dotenv PATH]
 ```
 
 Idempotent. Run this after initial setup and after any `schema.sql` changes.
+
+---
+
+### `migrate-embedding-dim` — Realign Vector Dimension + Reindex
+
+```bash
+python run.py migrate-embedding-dim [--yes] [--target-dim N] [--reindex-kb/--skip-reindex-kb] [--reset-memory/--keep-memory] [--dotenv PATH]
+```
+
+Use this when switching embedding models (for example, `nomic-embed-text` 768 -> `text-embedding-ada-002` 1536).  
+It aligns `chunks.embedding` to the target dimension, clears indexed docs/chunks, and optionally rebuilds KB vectors.
 
 ---
 
@@ -1068,7 +1087,7 @@ All search functions accept an optional `doc_id_filter` which is pushed to the S
 - Tools: `scratchpad_write`, `scratchpad_read`, `scratchpad_list`
 
 **Persistent Memory** (PostgreSQL `memory` table):
-- Keyed by `(session_id, key)`
+- Keyed by `(tenant_id, session_id, key)`
 - Survives across turns and restarts
 - Used by the GeneralAgent via `memory_save`, `memory_load`, `memory_list`
 - Intended for facts the user explicitly confirms or asks the agent to remember
@@ -1098,7 +1117,7 @@ CREATE TABLE chunks (
     clause_number  TEXT,                        -- e.g. "3.2", "10.1.4"
     section_title  TEXT,
     content        TEXT NOT NULL,
-    embedding      vector(768),                 -- HNSW cosine index
+    embedding      vector(<EMBEDDING_DIM>),     -- HNSW cosine index
     ts             tsvector GENERATED ALWAYS    -- GIN full-text index
                    AS (to_tsvector('english', content)) STORED,
     chunk_type     TEXT DEFAULT 'general'       -- 'general'|'clause'|'requirement'|...
@@ -1107,11 +1126,12 @@ CREATE TABLE chunks (
 -- Cross-turn session memory
 CREATE TABLE memory (
     id          SERIAL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'local-dev',
     session_id  TEXT NOT NULL,
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     updated_at  TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(session_id, key)
+    UNIQUE(tenant_id, session_id, key)
 );
 ```
 
@@ -1243,14 +1263,14 @@ You> What documents do you have access to?
 
 | Limitation | Detail | Workaround |
 |---|---|---|
-| **Embedding model lock-in** | Changing the embed model requires full data reset + reindex — the vector dimension is baked into the schema | Run `reset-indexes --yes`, update `EMBEDDING_DIM`, update schema.sql `vector(N)`, reindex |
+| **Embedding model switch requires reindex** | Changing embed model dimensions requires rebuilding indexed vectors | Set `EMBEDDING_DIM` and run `python run.py migrate-embedding-dim --yes` |
 | **No streaming output** | Full response is generated before display. Both agents use `graph.invoke()` (blocking). Streaming is architecturally possible now that both agents use LangGraph — replace with `graph.astream(stream_mode="messages")` | Use smaller models or increase `OLLAMA_NUM_PREDICT` until streaming is wired |
 | **Single-process, synchronous** | One request at a time; no async concurrency | Wrap in a web server (FastAPI + asyncio) for concurrent users |
 | **OCR quality depends on scan quality** | Very small text, rotated scans, or low-resolution images produce poor OCR | Increase `dpi` in `rag/ocr.py:_render_and_ocr_page` (default 200, try 300) |
 | **PaddleOCR first-run download** | ~200 MB model download on first OCR use | Pre-pull in your Docker image or CI environment |
 | **DOCX images not extracted** | Images embedded inside `.docx` files are ignored | Export to PDF first |
 | **No multi-user isolation** | `memory` table is keyed by session UUID only; no authentication | Add an auth layer and pass user ID as session key |
-| **Azure dimension mismatch** | ada-002 outputs 1536 dims; default schema is 768 | Change `EMBEDDING_DIM=1536` and update schema.sql before first run |
+| **Embedding dimension mismatch** | Provider output dims and DB vector column can drift | Run `python run.py doctor`, then `python run.py migrate-embedding-dim --yes` if misaligned |
 | **Langfuse is a separate service** | Traces are silently dropped if Langfuse is unreachable | Set `LANGFUSE_PUBLIC_KEY=` (empty) to disable entirely |
 | **No prompt-injection defences** | Agent processes document content with no sanitisation | Add a content-safety layer before ingestion in production |
 | **HNSW index tuning** | Default `m=16, ef_construction=64` may not be optimal for very large collections (>1M chunks) | Tune in `schema.sql` and rebuild index |
@@ -1355,11 +1375,10 @@ ValueError: expected vector of dimension 768, got 1536
 
 You changed embedding models without updating `EMBEDDING_DIM` or the schema. Fix:
 
-1. Set `EMBEDDING_DIM=1536` in `.env`
-2. Edit `src/agentic_chatbot/db/schema.sql`: change `vector(768)` → `vector(1536)`
-3. Run `python run.py reset-indexes --yes`
-4. Run `python run.py migrate`
-5. Run `python run.py init-kb`
+1. Set the correct `EMBEDDING_DIM` in `.env` (for ada-002, use `1536`)
+2. Run `python run.py doctor` (verify mismatch is detected)
+3. Run `python run.py migrate-embedding-dim --yes`
+4. Re-run your demo or `python run.py init-kb`
 
 ---
 
@@ -1388,7 +1407,7 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OBJECT_STORE_BACKEND` | `local` | No | Object/doc source backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `SKILLS_BACKEND` | `local` | No | Skills prompt backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `PROMPTS_BACKEND` | `local` | No | Prompt-template backend (`local`, `s3`, `azure_blob`; local implemented) |
-| `LLM_PROVIDER` | `ollama` | Yes | `ollama` or `azure` |
+| `LLM_PROVIDER` | `azure` | Yes | `ollama` or `azure` |
 | `JUDGE_PROVIDER` | same as `LLM_PROVIDER` | No | Provider used for grading/judge LLM |
 | `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
@@ -1398,15 +1417,15 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
 | `OLLAMA_NUM_PREDICT` | `2048` | No | Max output tokens |
 | `DEMO_OLLAMA_NUM_PREDICT` | `2048` | No | Demo-only max output tokens override (`python run.py demo`) |
-| `OLLAMA_GGUF_AUTO_IMPORT` | `false` | No | Enable one-shot GGUF model creation helper in compose |
+| `OLLAMA_GGUF_AUTO_IMPORT` | `false` | No | Enable one-shot GGUF model creation helper (requires `ollama-import` profile) |
 | `OLLAMA_GGUF_MODEL_NAME` | — | If auto import | Model name to create with `ollama create` |
 | `OLLAMA_GGUF_MODELFILE` | `/gguf/Modelfile` | If auto import | Modelfile path mounted inside Ollama/importer containers |
 | `AZURE_OPENAI_API_KEY` | — | If Azure | Azure API key |
 | `AZURE_OPENAI_ENDPOINT` | — | If Azure | Azure resource endpoint |
 | `AZURE_OPENAI_API_VERSION` | `2024-05-01-preview` | If Azure | Azure API version |
-| `AZURE_OPENAI_DEPLOYMENT` | — | If Azure | Chat deployment name |
-| `AZURE_OPENAI_JUDGE_DEPLOYMENT` | same as `AZURE_OPENAI_DEPLOYMENT` | No | Judge deployment name |
-| `AZURE_OPENAI_EMBED_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
+| `AZURE_OPENAI_CHAT_DEPLOYMENT` | — | If Azure | Chat deployment name |
+| `AZURE_OPENAI_JUDGE_DEPLOYMENT` | same as `AZURE_OPENAI_CHAT_DEPLOYMENT` | No | Judge deployment name |
+| `AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
 | `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
 | `JUDGE_TEMPERATURE` | `0.0` | No | Judge-model temperature |
 | `PG_DSN` | `postgresql://raguser:ragpass@localhost:5432/ragdb` | Yes | PostgreSQL connection string |
@@ -1414,7 +1433,7 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `RAG_DB_USER` | `raguser` | No | Compose-managed primary DB user |
 | `RAG_DB_PASSWORD` | `ragpass` | No | Compose-managed primary DB password |
 | `RAG_DB_PORT` | `5432` | No | Host port for compose Postgres |
-| `EMBEDDING_DIM` | `768` | Yes | Must match embed model output |
+| `EMBEDDING_DIM` | `1536` | Yes | Must match embed model output |
 | `MAX_AGENT_STEPS` | `10` | No | GeneralAgent max loop iterations |
 | `MAX_TOOL_CALLS` | `12` | No | Max tool calls per turn |
 | `MAX_RAG_AGENT_STEPS` | `8` | No | RAGAgent max tool calls |

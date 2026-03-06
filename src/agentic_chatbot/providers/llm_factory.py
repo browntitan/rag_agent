@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agentic_chatbot.config import Settings
-from agentic_chatbot.providers.dependency_checks import raise_if_missing_provider_dependencies
+from agentic_chatbot.providers.dependency_checks import (
+    raise_if_invalid_provider_configuration,
+    raise_if_missing_provider_dependencies,
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
 
     # Fail fast with actionable instructions before provider imports.
     raise_if_missing_provider_dependencies(settings)
+    raise_if_invalid_provider_configuration(settings)
 
     # --- Chat model ---
     if llm_provider == "ollama":
@@ -52,11 +56,6 @@ def build_providers(settings: Settings) -> ProviderBundle:
     else:
         # Azure OpenAI
         from langchain_openai import AzureChatOpenAI
-
-        if not (settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_chat_deployment):
-            raise ValueError(
-                "Azure selected but AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT missing"
-            )
 
         chat = AzureChatOpenAI(
             api_key=settings.azure_openai_api_key,
@@ -79,11 +78,6 @@ def build_providers(settings: Settings) -> ProviderBundle:
         )
     else:
         from langchain_openai import AzureChatOpenAI
-
-        if not (settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_judge_deployment):
-            raise ValueError(
-                "Judge provider azure selected but AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_JUDGE_DEPLOYMENT missing"
-            )
         judge = AzureChatOpenAI(
             api_key=settings.azure_openai_api_key,
             azure_endpoint=settings.azure_openai_endpoint,
@@ -102,11 +96,6 @@ def build_providers(settings: Settings) -> ProviderBundle:
         )
     else:
         from langchain_openai import AzureOpenAIEmbeddings
-
-        if not (settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_embed_deployment):
-            raise ValueError(
-                "Azure embeddings selected but AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_EMBED_DEPLOYMENT missing"
-            )
         embeddings = AzureOpenAIEmbeddings(
             api_key=settings.azure_openai_api_key,
             azure_endpoint=settings.azure_openai_endpoint,

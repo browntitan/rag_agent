@@ -30,7 +30,8 @@ services:
 
   ollama-gguf-importer:
     image: ollama/ollama:latest
-    profiles: ["ollama"]
+    # Explicit opt-in helper; does not run in the default `ollama` profile.
+    profiles: ["ollama-import"]
     restart: "no"
     depends_on:
       ollama:
