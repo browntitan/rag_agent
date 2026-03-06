@@ -385,6 +385,11 @@ def doctor(
         f"EMBEDDINGS_PROVIDER={settings.embeddings_provider}",
         f"EMBEDDING_DIM={settings.embedding_dim}",
         f"PG_DSN={_mask_dsn_password(settings.pg_dsn)}",
+        f"HTTP2_ENABLED={settings.http2_enabled}",
+        f"SSL_VERIFY={settings.ssl_verify}",
+        f"SSL_CERT_FILE={settings.ssl_cert_file or '<unset>'}",
+        f"TIKTOKEN_ENABLED={settings.tiktoken_enabled}",
+        f"TIKTOKEN_CACHE_DIR={settings.tiktoken_cache_dir or '<unset>'}",
     ]
     if needs_ollama:
         config_lines.append(f"OLLAMA_BASE_URL={settings.ollama_base_url}")

@@ -81,6 +81,15 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
         "embeddings": settings.embeddings_provider.lower(),
     }
 
+    if settings.ssl_cert_file and not settings.ssl_cert_file.exists():
+        issues.append(
+            ProviderConfigIssue(
+                context="tls",
+                message=f"SSL_CERT_FILE path does not exist: {settings.ssl_cert_file}",
+                hint="Set SSL_CERT_FILE to a valid certificate bundle path or unset it.",
+            )
+        )
+
     uses_azure = "azure" in provider_by_context.values()
     if uses_azure and settings.azure_openai_endpoint and not _is_valid_azure_endpoint(settings.azure_openai_endpoint):
         issues.append(

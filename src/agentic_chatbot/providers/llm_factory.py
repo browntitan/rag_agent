@@ -16,6 +16,22 @@ class ProviderBundle:
     embeddings: object
 
 
+def _build_httpx_client(settings: Settings):
+    import httpx
+
+    verify: bool | str = True
+    if not settings.ssl_verify:
+        verify = False
+    elif settings.ssl_cert_file:
+        verify = str(settings.ssl_cert_file)
+
+    return httpx.Client(
+        http2=settings.http2_enabled,
+        verify=verify,
+        timeout=httpx.Timeout(60.0, connect=20.0),
+    )
+
+
 def build_providers(settings: Settings) -> ProviderBundle:
     """Factory that builds the chat model, judge model, and embeddings.
 
@@ -41,6 +57,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
     # Fail fast with actionable instructions before provider imports.
     raise_if_missing_provider_dependencies(settings)
     raise_if_invalid_provider_configuration(settings)
+    http_client = _build_httpx_client(settings)
 
     # --- Chat model ---
     if llm_provider == "ollama":
@@ -63,6 +80,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
             api_version=settings.azure_openai_api_version,
             azure_deployment=settings.azure_openai_chat_deployment,
             temperature=settings.azure_temperature,
+            http_client=http_client,
         )
 
     # --- Judge model (can be provider/model-specific) ---
@@ -84,6 +102,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
             api_version=settings.azure_openai_api_version,
             azure_deployment=settings.azure_openai_judge_deployment,
             temperature=settings.judge_temperature,
+            http_client=http_client,
         )
 
     # --- Embeddings ---
@@ -101,6 +120,9 @@ def build_providers(settings: Settings) -> ProviderBundle:
             azure_endpoint=settings.azure_openai_endpoint,
             api_version=settings.azure_openai_api_version,
             azure_deployment=settings.azure_openai_embed_deployment,
+            http_client=http_client,
+            tiktoken_enabled=settings.tiktoken_enabled,
+            check_embedding_ctx_length=settings.tiktoken_enabled,
         )
 
     return ProviderBundle(chat=chat, judge=judge, embeddings=embeddings)

@@ -26,6 +26,15 @@ AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
 
 # text-embedding-ada-002 requires 1536-dim vectors
 EMBEDDING_DIM=1536
+
+# HTTP/TLS controls for corporate cert/proxy environments
+HTTP2_ENABLED=true
+SSL_VERIFY=true
+SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+
+# tiktoken controls (used by Azure embeddings token-length checks)
+TIKTOKEN_ENABLED=true
+TIKTOKEN_CACHE_DIR=./data/cache/tiktoken
 ```
 
 Notes:
@@ -33,6 +42,9 @@ Notes:
 - Gov endpoints are supported (`https://<resource>.openai.azure.us`).
 - Commercial endpoints are also valid (`https://<resource>.openai.azure.com`).
 - Backward-compatible aliases still load: `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_EMBED_DEPLOYMENT`.
+- Main app uses `httpx` client wiring for Azure provider calls.
+- `SSL_CERT_FILE` is propagated to `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` envs for non-httpx paths.
+- If SSL inspection blocks tiktoken downloads, set `TIKTOKEN_ENABLED=false` (or pre-seed `TIKTOKEN_CACHE_DIR`).
 
 If `EMBEDDING_DIM` does not match the DB vector column, run:
 

@@ -39,6 +39,11 @@ class Settings:
     azure_openai_embed_deployment: str | None
     azure_temperature: float
     judge_temperature: float
+    http2_enabled: bool
+    ssl_verify: bool
+    ssl_cert_file: Path | None
+    tiktoken_enabled: bool
+    tiktoken_cache_dir: Path | None
 
     # --- Runtime limits ---
     max_agent_steps: int
@@ -140,6 +145,13 @@ def _as_bool(name: str, default: bool) -> bool:
     return v.lower() in ("1", "true", "yes", "y")
 
 
+def _resolve_path(raw: str, *, base: Path) -> Path:
+    p = Path(raw)
+    if p.is_absolute():
+        return p
+    return (base / p).resolve()
+
+
 def load_settings(dotenv_path: str | None = None) -> Settings:
     """Load settings from environment (and optional .env)."""
 
@@ -181,6 +193,23 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     )
     azure_temperature = _as_float("AZURE_TEMPERATURE", 0.2)
     judge_temperature = _as_float("JUDGE_TEMPERATURE", 0.0)
+    http2_enabled = _as_bool("HTTP2_ENABLED", True)
+    ssl_verify = _as_bool("SSL_VERIFY", True)
+    ssl_cert_raw = _getenv("SSL_CERT_FILE", _getenv("APP_SSL_CERT_FILE"))
+    ssl_cert_file = _resolve_path(ssl_cert_raw, base=project_root) if ssl_cert_raw else None
+    tiktoken_enabled = _as_bool("TIKTOKEN_ENABLED", True)
+    tiktoken_cache_raw = _getenv("TIKTOKEN_CACHE_DIR")
+    tiktoken_cache_dir = _resolve_path(tiktoken_cache_raw, base=project_root) if tiktoken_cache_raw else None
+
+    if ssl_cert_file and ssl_verify:
+        # Ensure non-httpx paths (e.g. tiktoken/urllib) trust corporate CA bundle.
+        os.environ["SSL_CERT_FILE"] = str(ssl_cert_file)
+        os.environ["REQUESTS_CA_BUNDLE"] = str(ssl_cert_file)
+        os.environ["CURL_CA_BUNDLE"] = str(ssl_cert_file)
+
+    if tiktoken_cache_dir:
+        tiktoken_cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache_dir)
 
     # Runtime
     max_agent_steps = _as_int("MAX_AGENT_STEPS", 10)
@@ -291,6 +320,11 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         azure_openai_embed_deployment=azure_openai_embed_deployment,
         azure_temperature=azure_temperature,
         judge_temperature=judge_temperature,
+        http2_enabled=http2_enabled,
+        ssl_verify=ssl_verify,
+        ssl_cert_file=ssl_cert_file,
+        tiktoken_enabled=tiktoken_enabled,
+        tiktoken_cache_dir=tiktoken_cache_dir,
         max_agent_steps=max_agent_steps,
         max_tool_calls=max_tool_calls,
         rag_top_k_vector=rag_top_k_vector,

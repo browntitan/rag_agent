@@ -435,6 +435,14 @@ AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
 
+# Corporate cert / SSL interception controls
+HTTP2_ENABLED=true
+SSL_VERIFY=true
+SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+
+# If tiktoken download is blocked by SSL policy:
+TIKTOKEN_ENABLED=false
+
 # ── Database ──────────────────────────────────────────────────────
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
 EMBEDDING_DIM=1536                    # required for text-embedding-ada-002
