@@ -6,6 +6,7 @@ It is intentionally isolated from the production app runtime.
 ## Documentation
 
 - Technical guide: [docs/README_TECHNICAL.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/README_TECHNICAL.md)
+- Agent runtime guide: [docs/AGENT_RUNTIME_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/AGENT_RUNTIME_GUIDE.md)
 - C4 diagrams: [docs/C4_ARCHITECTURE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/C4_ARCHITECTURE.md)
 - Skills usage: [docs/SKILLS_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/SKILLS_GUIDE.md)
 - Print trace observability: [docs/OBSERVABILITY_PRINT_TRACES.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/OBSERVABILITY_PRINT_TRACES.md)
