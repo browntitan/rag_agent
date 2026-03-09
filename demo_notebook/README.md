@@ -11,6 +11,22 @@ It is intentionally isolated from the production app runtime.
 - Skills usage: [docs/SKILLS_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/SKILLS_GUIDE.md)
 - Print trace observability: [docs/OBSERVABILITY_PRINT_TRACES.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/OBSERVABILITY_PRINT_TRACES.md)
 
+## Skills in One Minute
+
+Skills in `demo_notebook` are prompt overlays, not tool plugins.
+
+1. Skills are loaded from `demo_notebook/skills/*.md`.
+2. They activate only when both toggles are true:
+   - `NOTEBOOK_SKILLS_ENABLED=true`
+   - `NOTEBOOK_SKILLS_SHOWCASE_MODE=true`
+3. They are composed and injected into supervisor/RAG/general/utility/synthesis prompts by `DemoOrchestrator`.
+
+Deep dive links:
+
+- Activation + composition + mapping: [docs/SKILLS_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/SKILLS_GUIDE.md)
+- Runtime injection lifecycle table: [docs/AGENT_RUNTIME_GUIDE.md#5-skill-injection-lifecycle](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/AGENT_RUNTIME_GUIDE.md)
+- Demo behavior expectations: [docs/AGENT_RUNTIME_GUIDE.md#4-demo-scenarios-and-expected-outputs](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/AGENT_RUNTIME_GUIDE.md)
+
 ## Isolation guarantees
 
 - No imports from `src/agentic_chatbot`.
