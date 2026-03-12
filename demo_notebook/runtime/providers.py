@@ -66,6 +66,7 @@ def _build_httpx_client(settings: NotebookSettings):
 
     return httpx.Client(
         http2=settings.http2_enabled,
+        trust_env=settings.httpx_trust_env,
         verify=verify,
         timeout=httpx.Timeout(60.0, connect=20.0),
     )

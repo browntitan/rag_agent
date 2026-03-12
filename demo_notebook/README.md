@@ -128,11 +128,39 @@ NOTEBOOK_NVIDIA_TOKEN=<your-token>
 NOTEBOOK_NVIDIA_CHAT_MODEL=openaigpt-oss-120b
 NOTEBOOK_NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
 NOTEBOOK_NVIDIA_TEMPERATURE=0.0
+NOTEBOOK_HTTPX_TRUST_ENV=false
 
 # NVIDIA is chat/judge only in this notebook runtime:
 NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND=ollama
 NOTEBOOK_OLLAMA_EMBED_MODEL=nomic-embed-text
 NOTEBOOK_EMBEDDING_DIM=768
+```
+
+Hybrid NVIDIA chat + Azure embeddings example:
+
+```env
+NOTEBOOK_PROVIDER=nvidia
+NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND=azure
+
+NOTEBOOK_NVIDIA_ENDPOINT=https://<your-nvidia-host>/v1
+NOTEBOOK_NVIDIA_TOKEN=<token>
+NOTEBOOK_NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NOTEBOOK_NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+
+NOTEBOOK_AZURE_API_KEY=...
+NOTEBOOK_AZURE_ENDPOINT=https://<resource>.openai.azure.us/
+NOTEBOOK_AZURE_EMBED_DEPLOYMENT=text-embedding-ada-002
+
+NOTEBOOK_SSL_VERIFY=false
+NOTEBOOK_HTTPX_TRUST_ENV=false
+```
+
+If Azure needs your corporate proxy but NVIDIA should bypass it:
+
+```env
+NOTEBOOK_HTTPX_TRUST_ENV=true
+NO_PROXY=<nvidia-host>
+no_proxy=<nvidia-host>
 ```
 
 Embeddings backend options for NVIDIA mode:
@@ -146,6 +174,7 @@ Known working corporate profile (matches your prior successful setup):
 
 ```env
 NOTEBOOK_HTTP2=true
+NOTEBOOK_HTTPX_TRUST_ENV=true
 NOTEBOOK_SSL_VERIFY=false
 NOTEBOOK_TIKTOKEN_ENABLED=false
 ```
@@ -154,6 +183,7 @@ If your company network allows cert validation, use a CA bundle instead:
 
 ```env
 NOTEBOOK_HTTP2=true
+NOTEBOOK_HTTPX_TRUST_ENV=true
 NOTEBOOK_SSL_VERIFY=true
 NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem
 ```

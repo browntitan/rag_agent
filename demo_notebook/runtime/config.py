@@ -28,6 +28,7 @@ class NotebookSettings:
     temperature: float
     judge_temperature: float
     http2_enabled: bool
+    httpx_trust_env: bool
     ssl_verify: bool
     ssl_cert_file: Optional[Path]
     tiktoken_enabled: bool
@@ -165,6 +166,7 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         temperature=_as_float("NOTEBOOK_TEMPERATURE", 0.2),
         judge_temperature=_as_float("NOTEBOOK_JUDGE_TEMPERATURE", 0.0),
         http2_enabled=_as_bool("NOTEBOOK_HTTP2", True),
+        httpx_trust_env=_as_bool("NOTEBOOK_HTTPX_TRUST_ENV", True),
         ssl_verify=_as_bool("NOTEBOOK_SSL_VERIFY", True),
         ssl_cert_file=ssl_cert_file,
         tiktoken_enabled=_as_bool("NOTEBOOK_TIKTOKEN_ENABLED", True),

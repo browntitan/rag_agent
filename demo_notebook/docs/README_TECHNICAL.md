@@ -60,12 +60,19 @@ Key vars are documented in `/Users/shivbalodi/Desktop/Rag_Research/langchain_age
 
 For Azure/vLLM SSL interception or private CA environments:
 - `NOTEBOOK_HTTP2=true`
+- `NOTEBOOK_HTTPX_TRUST_ENV=true` (uses proxy env vars if set)
 - `NOTEBOOK_SSL_VERIFY=false` (common corporate fallback) or `true` with CA bundle
 - `NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem`
 - `NOTEBOOK_TIKTOKEN_CACHE_DIR=./.cache/tiktoken` (avoid runtime encoding download failures)
 
 If your security policy allows certificate validation, prefer `NOTEBOOK_SSL_VERIFY=true` with `NOTEBOOK_SSL_CERT_FILE`.
 For embedding paths only: `NOTEBOOK_TIKTOKEN_ENABLED=false` bypasses tiktoken tokenization.
+
+### Proxy vs TLS clarification
+
+- `NOTEBOOK_SSL_VERIFY=false` disables certificate verification only.
+- It does **not** disable proxy routing.
+- `NOTEBOOK_HTTPX_TRUST_ENV` controls whether `httpx` honors `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`.
 
 ## 5) Database schema
 
@@ -95,6 +102,9 @@ Notebook sections:
 - Empty KB results: confirm `NOTEBOOK_KB_DIR` points to existing files and rerun bootstrap cell.
 - `expected 1536 dimensions, not 768`: set `NOTEBOOK_EMBEDDING_DIM=768` for Ollama `nomic-embed-text`, drop `dn_chunks`/`dn_documents`, then rerun bootstrap.
 - Prompt behavior not changing in skills demo: verify `NOTEBOOK_SKILLS_ENABLED=true` and run section F cells that force showcase mode.
+- Proxy connection errors on NVIDIA chat:
+  - try `NOTEBOOK_HTTPX_TRUST_ENV=false` first
+  - if Azure needs proxy but NVIDIA should bypass it, set `NOTEBOOK_HTTPX_TRUST_ENV=true` and `NO_PROXY=<nvidia-host>` (plus lowercase `no_proxy`)
 
 ## 8) Isolation checks
 
