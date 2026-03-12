@@ -112,7 +112,9 @@ def _resolve_path(raw: str, *, base: Path) -> Path:
 
 
 def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
-    load_dotenv(dotenv_path=dotenv_path)
+    # In notebooks, users frequently edit `.env` and rerun cells in the same kernel.
+    # Force reload so updated transport/provider flags are applied deterministically.
+    load_dotenv(dotenv_path=dotenv_path, override=True)
 
     # runtime/config.py -> runtime -> demo_notebook -> repo root
     repo_root = Path(__file__).resolve().parents[2]
