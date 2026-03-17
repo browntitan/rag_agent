@@ -121,6 +121,14 @@ class Settings:
     # --- OpenAI-compatible gateway ---
     gateway_model_id: str
 
+    # --- LLM Router ---
+    llm_router_enabled: bool            # env: LLM_ROUTER_ENABLED (default: True)
+    llm_router_confidence_threshold: float  # env: LLM_ROUTER_CONFIDENCE_THRESHOLD (default: 0.70)
+
+    # --- Web search fallback (opt-in) ---
+    tavily_api_key: str | None          # env: TAVILY_API_KEY
+    web_search_enabled: bool            # env: WEB_SEARCH_ENABLED (default: False)
+
 
 def _getenv(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
@@ -290,6 +298,14 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     # Gateway model config
     gateway_model_id = str(_getenv("GATEWAY_MODEL_ID", "enterprise-agent"))
 
+    # LLM Router
+    llm_router_enabled = _as_bool("LLM_ROUTER_ENABLED", True)
+    llm_router_confidence_threshold = _as_float("LLM_ROUTER_CONFIDENCE_THRESHOLD", 0.70)
+
+    # Web search fallback
+    tavily_api_key = _getenv("TAVILY_API_KEY")
+    web_search_enabled = _as_bool("WEB_SEARCH_ENABLED", False)
+
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
         raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
@@ -386,4 +402,8 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         default_user_id=default_user_id,
         default_conversation_id=default_conversation_id,
         gateway_model_id=gateway_model_id,
+        llm_router_enabled=llm_router_enabled,
+        llm_router_confidence_threshold=llm_router_confidence_threshold,
+        tavily_api_key=tavily_api_key,
+        web_search_enabled=web_search_enabled,
     )

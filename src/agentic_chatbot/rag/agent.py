@@ -69,9 +69,18 @@ def run_rag_agent(
         system_prompt = _DEFAULT_RAG_SYSTEM
 
     # ------------------------------------------------------------------
-    # 2. Build tools
+    # 2. Build tools (core 11 + optional extended tools)
     # ------------------------------------------------------------------
     rag_tools = make_all_rag_tools(stores, session, settings=settings)
+
+    try:
+        from agentic_chatbot.tools.rag_tools_extended import make_extended_rag_tools
+        extended = make_extended_rag_tools(
+            stores, session, judge_llm=judge_llm, settings=settings
+        )
+        rag_tools = rag_tools + extended
+    except ImportError:
+        pass
 
     try:
         llm_with_tools = llm.bind_tools(rag_tools)

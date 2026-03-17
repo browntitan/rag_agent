@@ -9,6 +9,8 @@ class RouterDecision:
     route: str  # "BASIC" | "AGENT"
     confidence: float
     reasons: list[str]
+    suggested_agent: str = ""          # "" | "rag_agent" | "utility_agent" | "parallel_rag"
+    router_method: str = "deterministic"  # "deterministic" | "llm" | "llm_fallback"
 
 
 _TOOL_VERBS = re.compile(
