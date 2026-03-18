@@ -435,6 +435,14 @@ AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
 
+# Corporate cert / SSL interception controls
+HTTP2_ENABLED=true
+SSL_VERIFY=true
+SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+
+# If tiktoken download is blocked by SSL policy:
+TIKTOKEN_ENABLED=false
+
 # ── Database ──────────────────────────────────────────────────────
 PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
 EMBEDDING_DIM=1536                    # required for text-embedding-ada-002
@@ -444,7 +452,36 @@ Legacy aliases are still accepted: `AZURE_OPENAI_DEPLOYMENT` (chat) and `AZURE_O
 
 If you run backend commands in the `app` container, Compose injects an internal `PG_DSN` to the `rag-postgres` service automatically.
 
-### 6.2 Using Ollama Instead of Azure (Optional)
+### 6.2 Using NVIDIA Endpoint Instead of Azure (Optional)
+
+```env
+LLM_PROVIDER=nvidia
+JUDGE_PROVIDER=nvidia
+EMBEDDINGS_PROVIDER=ollama   # or azure
+
+NVIDIA_OPENAI_ENDPOINT=https://openaigpt-oss-120b-lighthouse-ai-dev-vllm.apps.lh-prod.ekho.myngc.com/v1
+NVIDIA_API_TOKEN=<your-token>
+NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+NVIDIA_TEMPERATURE=0.0
+
+HTTP2_ENABLED=true
+SSL_VERIFY=false
+TIKTOKEN_ENABLED=false
+```
+
+Validate config quickly:
+
+```bash
+python run.py doctor --skip-db --skip-ollama
+```
+
+Troubleshooting:
+- `401/403`: verify `NVIDIA_API_TOKEN`.
+- `404 model not found`: check `NVIDIA_CHAT_MODEL` / `NVIDIA_JUDGE_MODEL`.
+- SSL issues: keep `SSL_VERIFY=false` or set `SSL_VERIFY=true` + `SSL_CERT_FILE=/path/to/ca.pem`.
+
+### 6.3 Using Ollama Instead of Azure (Optional)
 
 ```env
 LLM_PROVIDER=ollama
@@ -465,7 +502,7 @@ EMBEDDING_DIM=768
 > **Important:** If you change embedding models/dimensions on an existing DB, run:
 > `python run.py migrate-embedding-dim --yes`
 
-### 6.3 Skills and Prompt Template Paths
+### 6.4 Skills and Prompt Template Paths
 
 All system prompts and judge/synthesis prompt templates are path-configurable:
 
@@ -1407,9 +1444,9 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OBJECT_STORE_BACKEND` | `local` | No | Object/doc source backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `SKILLS_BACKEND` | `local` | No | Skills prompt backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `PROMPTS_BACKEND` | `local` | No | Prompt-template backend (`local`, `s3`, `azure_blob`; local implemented) |
-| `LLM_PROVIDER` | `azure` | Yes | `ollama` or `azure` |
+| `LLM_PROVIDER` | `azure` | Yes | `ollama`, `azure`, or `nvidia` |
 | `JUDGE_PROVIDER` | same as `LLM_PROVIDER` | No | Provider used for grading/judge LLM |
-| `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` |
+| `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` (set explicitly when `LLM_PROVIDER=nvidia`) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
 | `OLLAMA_CHAT_MODEL` | `qwen3:8b` | If Ollama | Chat model name |
 | `OLLAMA_JUDGE_MODEL` | same as `OLLAMA_CHAT_MODEL` | No | Judge model name for Ollama |
@@ -1427,6 +1464,11 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `AZURE_OPENAI_JUDGE_DEPLOYMENT` | same as `AZURE_OPENAI_CHAT_DEPLOYMENT` | No | Judge deployment name |
 | `AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT` | — | If Azure embed | Embedding deployment name |
 | `AZURE_TEMPERATURE` | `0.2` | No | Azure generation temperature |
+| `NVIDIA_OPENAI_ENDPOINT` | — | If NVIDIA chat/judge | OpenAI-compatible base URL for NVIDIA endpoint |
+| `NVIDIA_API_TOKEN` | — | If NVIDIA chat/judge | Bearer token for NVIDIA endpoint auth (`Token` alias also accepted) |
+| `NVIDIA_CHAT_MODEL` | — | If `LLM_PROVIDER=nvidia` | NVIDIA chat model ID |
+| `NVIDIA_JUDGE_MODEL` | same as `NVIDIA_CHAT_MODEL` | If `JUDGE_PROVIDER=nvidia` | NVIDIA judge model ID |
+| `NVIDIA_TEMPERATURE` | `0.0` | No | NVIDIA chat/judge temperature |
 | `JUDGE_TEMPERATURE` | `0.0` | No | Judge-model temperature |
 | `PG_DSN` | `postgresql://raguser:ragpass@localhost:5432/ragdb` | Yes | PostgreSQL connection string |
 | `RAG_DB_NAME` | `ragdb` | No | Compose-managed primary DB name |

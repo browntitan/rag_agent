@@ -1,72 +1,153 @@
-# Skills Guide (Standalone demo_notebook)
+# Skills Guide (Standalone `demo_notebook`)
 
-This guide documents the notebook-local skills system under `demo_notebook/skills`.
+This guide is the canonical technical reference for notebook-local skills in `demo_notebook/skills`.
 
-## Purpose
+The notebook skills system is isolated from the production app and only affects the standalone notebook runtime.
 
-Skills are markdown overlays that modify system prompts for the standalone notebook runtime.
-They are used only for demonstration and are intentionally lightweight.
+## 1) What a Skill Is in `demo_notebook`
 
-## Skill files
+A skill is markdown text merged into system prompts. It is not executable code and does not add tools.
+
+- Loader/composer module: `demo_notebook/runtime/skills.py`
+- Runtime integration point: `demo_notebook/runtime/orchestrator.py`
+- Data container: `SkillProfile(enabled, active_files, prompts)`
+
+## 2) Activation Gate Logic
+
+Skills are only active when both toggles are true:
+
+- `NOTEBOOK_SKILLS_ENABLED=true`
+- `NOTEBOOK_SKILLS_SHOWCASE_MODE=true`
+
+The gate check is implemented in `build_skill_profile(...)`:
+
+```python
+if not (settings.skills_enabled and settings.skills_showcase_mode):
+    return SkillProfile(enabled=False, active_files=[], prompts=dict(base_prompts))
+```
+
+If either toggle is false, runtime uses baseline prompts unchanged.
+
+## 3) Skill Files and Scope
 
 Location: `/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/skills`
 
-- `shared.md`: global prompt constraints used across roles.
-- `supervisor.md`: routing priorities and supervisor behavior.
-- `rag_agent.md`: evidence and citation behavior for RAG specialist.
-- `general_agent.md`: behavior for general ReAct agent.
-- `utility_agent.md`: deterministic output style for utility work.
-- `skills_showcase_override.md`: high-visibility override used in showcase mode.
+| Skill File | Role |
+|---|---|
+| `shared.md` | Shared constraints across all prompt keys |
+| `supervisor.md` | Supervisor routing behavior |
+| `rag_agent.md` | RAG agent evidence/citation behavior |
+| `general_agent.md` | GeneralAgent behavior |
+| `utility_agent.md` | Utility behavior |
+| `skills_showcase_override.md` | Extra high-visibility constraints for showcase mode |
 
-## Configuration
+## 4) Composition Order and Prompt Model
 
-In `.env`:
+Prompt composition order is deterministic:
 
-- `NOTEBOOK_SKILLS_ENABLED=true|false`
-- `NOTEBOOK_SKILLS_DIR=./skills`
-- `NOTEBOOK_SKILLS_SHOWCASE_MODE=true|false`
+1. Base prompt (runtime default constant)
+2. Shared skill text (`shared.md`)
+3. Role skill text (`<role>.md`)
+4. Showcase override (`skills_showcase_override.md`)
 
-## Load and composition order
+Composed prompt format:
 
-Prompt composition in `runtime/skills.py`:
+```text
+<base prompt>
 
-1. Base prompt (hardcoded runtime default).
-2. Shared skill text (`shared.md`).
-3. Role skill text (`<role>.md`).
-4. Showcase override (`skills_showcase_override.md`) when showcase mode is on.
+## Shared Skills
+<shared markdown>
 
-Final prompt format is additive and does not mutate runtime code paths.
+## Role Skills
+<role markdown>
 
-## Scope of impact
+## Showcase Override
+<override markdown>
+```
 
-When enabled in showcase mode, composed prompts are applied to:
+## 5) Prompt Key -> Runtime Node Mapping
 
-- supervisor node
-- RAG agent
-- GeneralAgent
-- utility specialist prompt
-- parallel synthesizer system prompt
+`SkillProfile.prompts` contains these keys and targets:
 
-When disabled, runtime behavior remains baseline.
+| Prompt Key | Runtime Consumer |
+|---|---|
+| `supervisor` | Supervisor node (`make_supervisor_node`) |
+| `rag` | RAG agent (`run_rag_agent`) |
+| `general` | GeneralAgent direct/fallback (`run_general_agent`) |
+| `utility` | Utility specialist path in graph builder |
+| `synthesis` | Parallel synthesizer prompt in graph builder |
 
-## Running the showcase demo
+`DemoOrchestrator` passes these prompt values when building graph and direct-agent calls.
 
-Use notebook section **F) Skills Showcase**.
+## 6) How Section F Proves Skills Behavior
 
-It runs the same scenario twice:
+Notebook Section F (`SKILLS_SHOWCASE_SCENARIO`) runs the same task twice:
 
-1. Baseline mode (`skills_showcase_mode=false`)
-2. Skills mode (`skills_showcase_mode=true`)
+1. Baseline orchestrator (`skills_enabled=False`, `skills_showcase_mode=False`)
+2. Skills orchestrator (`skills_enabled=True`, `skills_showcase_mode=True`)
 
-The notebook prints active skill files so prompt inputs are explicit and auditable.
+The notebook prints loaded skill files (`active_skill_files`) when skills mode is active, so prompt inputs are auditable.
 
-## Authoring tips
+## 7) Create a New Notebook Skill (Canonical Workflow)
 
-- Keep directives short and testable.
-- Prefer behavior constraints over broad style instructions.
-- Avoid conflicting instructions across shared and role files.
-- Use `skills_showcase_override.md` for obvious demo-only behavior deltas.
+1. Pick target path first (`supervisor`, `rag`, `general`, `utility`, `synthesis`).
+2. Add or edit only the corresponding markdown file.
+3. Keep shared policy in `shared.md`; keep role-specific rules in role file.
+4. Add explicit and testable rules (tool order, stopping rules, output contract).
+5. Re-run Section F and compare baseline vs skills-enabled output.
+6. Confirm the changed file appears in printed `active_skill_files`.
 
-## Safety note
+Suggested header for each file:
 
-This skills system is demo-only for this branch deliverable and is isolated from production runtime.
+```markdown
+# <Skill Name>
+Version: 2026-03-06
+Owner: <team-or-person>
+
+## Changelog
+- 2026-03-06: <what changed and why>
+```
+
+## 8) Debugging and Failure Signatures
+
+### Symptom: no behavioral change in skills mode
+
+Checks:
+
+- Confirm both toggles are true.
+- Confirm `NOTEBOOK_SKILLS_DIR` points to expected folder.
+- Confirm edited file appears in `active_skill_files` printout.
+
+### Symptom: behavior still baseline
+
+Cause:
+
+- Gate disabled (`enabled && showcase_mode` not satisfied).
+
+### Symptom: inconsistent/contradictory outputs
+
+Cause:
+
+- Conflicting directives across `shared.md`, role file, and override.
+
+Fix:
+
+- Remove contradictory "always/never" rules and keep one source of truth per behavior.
+
+### Symptom: wrong tool pattern
+
+Cause:
+
+- Prompt asks for tools that are not in the runtime tool list for that node.
+
+Fix:
+
+- Align skill instructions with actual node tool availability.
+
+## 9) Relationship to Main App Skills
+
+This notebook skills system is branch-local and isolated.
+
+- Notebook skills live in `demo_notebook/skills`.
+- Main app skills live in `data/skills` and are loaded by `src/agentic_chatbot/rag/skills.py`.
+- Changes in one do not affect the other.

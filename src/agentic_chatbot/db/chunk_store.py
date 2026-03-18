@@ -302,6 +302,49 @@ class ChunkStore:
                 rows = cur.fetchall()
         return [_row_to_chunk(dict(r)) for r in rows]
 
+    # ------------------------------------------------------------------
+    # Point-lookup helpers (used by extended RAG tools)
+    # ------------------------------------------------------------------
+
+    def get_chunk_by_id(self, chunk_id: str, tenant_id: str) -> Optional[ChunkRecord]:
+        """Fetch a single chunk by its exact chunk_id."""
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM chunks WHERE chunk_id = %s AND tenant_id = %s LIMIT 1",
+                    (chunk_id, tenant_id),
+                )
+                row = cur.fetchone()
+        return _row_to_chunk(dict(row)) if row else None
+
+    def get_chunks_by_index_range(
+        self,
+        doc_id: str,
+        min_idx: int,
+        max_idx: int,
+        tenant_id: str,
+    ) -> List[ChunkRecord]:
+        """Return chunks with chunk_index BETWEEN min_idx AND max_idx, ordered by index.
+
+        Used by the ``chunk_expander`` tool to fetch neighbouring chunks for
+        context window expansion around a retrieved snippet.
+        """
+        clamped_min = max(0, min_idx)
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM chunks
+                    WHERE doc_id = %s
+                      AND tenant_id = %s
+                      AND chunk_index BETWEEN %s AND %s
+                    ORDER BY chunk_index
+                    """,
+                    (doc_id, tenant_id, clamped_min, max_idx),
+                )
+                rows = cur.fetchall()
+        return [_row_to_chunk(dict(r)) for r in rows]
+
     def chunk_count(self, doc_id: Optional[str] = None, tenant_id: str = "local-dev") -> int:
         """Return total number of chunks (optionally filtered by doc_id)."""
         with get_conn() as conn:

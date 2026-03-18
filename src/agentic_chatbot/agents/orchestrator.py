@@ -19,7 +19,7 @@ from agentic_chatbot.rag import (
     load_general_agent_skills,
     load_stores,
 )
-from agentic_chatbot.router import route_message
+from agentic_chatbot.router import route_message, route_message_hybrid
 from agentic_chatbot.tools import calculator, make_list_docs_tool, make_memory_tools, make_rag_agent_tool
 
 from agentic_chatbot.agents.basic_chat import run_basic_chat
@@ -27,6 +27,24 @@ from agentic_chatbot.agents.general_agent import run_general_agent
 from agentic_chatbot.agents.session import ChatSession
 
 logger = logging.getLogger(__name__)
+
+
+def _summarise_history(messages: List[Any], n: int = 2) -> str:
+    """Return a compact plain-text summary of the last *n* message pairs.
+
+    Used to give the LLM router context about the ongoing conversation without
+    sending the full message history.
+    """
+    human_ai_pairs: List[str] = []
+    for msg in reversed(messages):
+        role = getattr(msg, "type", "")
+        content = str(getattr(msg, "content", "") or "").strip()
+        if role in ("human", "ai") and content:
+            prefix = "User" if role == "human" else "Assistant"
+            human_ai_pairs.append(f"{prefix}: {content[:120]}")
+        if len(human_ai_pairs) >= n * 2:
+            break
+    return "\n".join(reversed(human_ai_pairs))
 
 
 def _is_graph_capability_error(exc: Exception) -> bool:
@@ -244,8 +262,20 @@ class ChatbotApp:
         if upload_paths:
             self.ingest_and_summarize_uploads(session, upload_paths)
 
-        # 2) Route.
-        decision = route_message(user_text, has_attachments=bool(upload_paths), explicit_force_agent=force_agent)
+        # 2) Route — use hybrid LLM router when enabled, deterministic otherwise.
+        if self.ctx.settings.llm_router_enabled:
+            decision = route_message_hybrid(
+                user_text,
+                has_attachments=bool(upload_paths),
+                judge_llm=self.ctx.providers.judge,
+                history_summary=_summarise_history(session.messages, n=2),
+                explicit_force_agent=force_agent,
+                llm_confidence_threshold=self.ctx.settings.llm_router_confidence_threshold,
+            )
+        else:
+            decision = route_message(
+                user_text, has_attachments=bool(upload_paths), explicit_force_agent=force_agent
+            )
 
         meta = {
             "route": decision.route,
@@ -280,8 +310,9 @@ class ChatbotApp:
             return text
 
         # 3) Agent — try multi-agent graph, fall back to single GeneralAgent.
+        suggested_agent = getattr(decision, "suggested_agent", "")
         try:
-            text = self._run_multi_agent_graph(session, user_text, callbacks)
+            text = self._run_multi_agent_graph(session, user_text, callbacks, suggested_agent=suggested_agent)
         except Exception:
             logger.exception(
                 "Unexpected multi-agent graph failure. "
@@ -310,6 +341,8 @@ class ChatbotApp:
         session: ChatSession,
         user_text: str,
         callbacks: List[Any],
+        *,
+        suggested_agent: str = "",
     ) -> Optional[str]:
         """Try to run the multi-agent supervisor graph.
 
@@ -329,7 +362,7 @@ class ChatbotApp:
                 callbacks=callbacks,
             )
 
-            initial_state = build_initial_state(session, user_text)
+            initial_state = build_initial_state(session, user_text, suggested_agent=suggested_agent)
 
             result = graph.invoke(
                 initial_state,

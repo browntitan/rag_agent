@@ -11,6 +11,22 @@ It is intentionally isolated from the production app runtime.
 - Skills usage: [docs/SKILLS_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/SKILLS_GUIDE.md)
 - Print trace observability: [docs/OBSERVABILITY_PRINT_TRACES.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/OBSERVABILITY_PRINT_TRACES.md)
 
+## Skills in One Minute
+
+Skills in `demo_notebook` are prompt overlays, not tool plugins.
+
+1. Skills are loaded from `demo_notebook/skills/*.md`.
+2. They activate only when both toggles are true:
+   - `NOTEBOOK_SKILLS_ENABLED=true`
+   - `NOTEBOOK_SKILLS_SHOWCASE_MODE=true`
+3. They are composed and injected into supervisor/RAG/general/utility/synthesis prompts by `DemoOrchestrator`.
+
+Deep dive links:
+
+- Activation + composition + mapping: [docs/SKILLS_GUIDE.md](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/SKILLS_GUIDE.md)
+- Runtime injection lifecycle table: [docs/AGENT_RUNTIME_GUIDE.md#5-skill-injection-lifecycle](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/AGENT_RUNTIME_GUIDE.md)
+- Demo behavior expectations: [docs/AGENT_RUNTIME_GUIDE.md#4-demo-scenarios-and-expected-outputs](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/docs/AGENT_RUNTIME_GUIDE.md)
+
 ## Isolation guarantees
 
 - No imports from `src/agentic_chatbot`.
@@ -100,26 +116,80 @@ NOTEBOOK_AZURE_JUDGE_DEPLOYMENT=gpt-4o
 NOTEBOOK_AZURE_EMBED_DEPLOYMENT=text-embedding-ada-002
 ```
 
+## NVIDIA GPU Farm Setup (OpenAI-Compatible)
+
+In `demo_notebook/.env` set:
+
+```env
+NOTEBOOK_PROVIDER=nvidia
+NOTEBOOK_PG_DSN=postgresql://raguser:ragpass@localhost:5432/ragdb
+NOTEBOOK_NVIDIA_ENDPOINT=https://openaigpt-oss-120b-lighthouse-ai-dev-vllm.apps.lh-prod.ekho.myngc.com/v1
+NOTEBOOK_NVIDIA_TOKEN=<your-token>
+NOTEBOOK_NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NOTEBOOK_NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+NOTEBOOK_NVIDIA_TEMPERATURE=0.0
+NOTEBOOK_HTTPX_TRUST_ENV=false
+
+# NVIDIA is chat/judge only in this notebook runtime:
+NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND=ollama
+NOTEBOOK_OLLAMA_EMBED_MODEL=nomic-embed-text
+NOTEBOOK_EMBEDDING_DIM=768
+```
+
+Hybrid NVIDIA chat + Azure embeddings example:
+
+```env
+NOTEBOOK_PROVIDER=nvidia
+NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND=azure
+
+NOTEBOOK_NVIDIA_ENDPOINT=https://<your-nvidia-host>/v1
+NOTEBOOK_NVIDIA_TOKEN=<token>
+NOTEBOOK_NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NOTEBOOK_NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+
+NOTEBOOK_AZURE_API_KEY=...
+NOTEBOOK_AZURE_ENDPOINT=https://<resource>.openai.azure.us/
+NOTEBOOK_AZURE_EMBED_DEPLOYMENT=text-embedding-ada-002
+
+NOTEBOOK_SSL_VERIFY=false
+NOTEBOOK_HTTPX_TRUST_ENV=false
+```
+
+If Azure needs your corporate proxy but NVIDIA should bypass it:
+
+```env
+NOTEBOOK_HTTPX_TRUST_ENV=true
+NO_PROXY=<nvidia-host>
+no_proxy=<nvidia-host>
+```
+
+Embeddings backend options for NVIDIA mode:
+- `ollama` (default, best demo retrieval quality)
+- `azure` (requires Azure embedding env vars)
+- `localhash` (offline fallback, lower retrieval quality)
+
 ## Corporate SSL / TLS Certificates
 
-If your company network requires a custom CA cert, set these in `demo_notebook/.env`:
+Known working corporate profile (matches your prior successful setup):
 
 ```env
 NOTEBOOK_HTTP2=true
+NOTEBOOK_HTTPX_TRUST_ENV=true
+NOTEBOOK_SSL_VERIFY=false
+NOTEBOOK_TIKTOKEN_ENABLED=false
+```
+
+If your company network allows cert validation, use a CA bundle instead:
+
+```env
+NOTEBOOK_HTTP2=true
+NOTEBOOK_HTTPX_TRUST_ENV=true
 NOTEBOOK_SSL_VERIFY=true
 NOTEBOOK_SSL_CERT_FILE=/absolute/path/to/company-ca.pem
 ```
 
-This is wired in [providers.py](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/runtime/providers.py) and applies to Azure/vLLM HTTP clients.
+This is wired in [providers.py](/Users/shivbalodi/Desktop/Rag_Research/langchain_agentic_chatbot_v2/demo_notebook/runtime/providers.py) and applies to Azure/vLLM/NVIDIA HTTP clients.
 It also sets `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` for non-httpx download paths (including `tiktoken`).
-
-If your company environment only works with SSL verification disabled, you can use:
-
-```env
-NOTEBOOK_SSL_VERIFY=false
-```
-
-This matches your previous `httpx.Client(http2=True, verify=False)` behavior, but use it only as a last resort.
 
 ### tiktoken download errors
 
@@ -143,8 +213,8 @@ NOTEBOOK_TIKTOKEN_ENABLED=false
 For paths with spaces, wrap value in double quotes and prefer forward slashes:
 
 ```env
-NOTEBOOK_SSL_CERT_FILE=\"C:/Users/you/Company Certificates/corp-root-ca.pem\"
-NOTEBOOK_TIKTOKEN_CACHE_DIR=\"C:/Users/you/AppData/Local/tiktoken cache\"
+NOTEBOOK_SSL_CERT_FILE="C:/Users/you/Company Certificates/corp-root-ca.pem"
+NOTEBOOK_TIKTOKEN_CACHE_DIR="C:/Users/you/AppData/Local/tiktoken cache"
 ```
 
 ## Ollama Setup

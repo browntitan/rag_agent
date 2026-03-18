@@ -4,8 +4,8 @@
 
 Supported today:
 
-- chat LLM: `ollama` or `azure`
-- judge LLM: `ollama` or `azure`
+- chat LLM: `ollama`, `azure`, or `nvidia`
+- judge LLM: `ollama`, `azure`, or `nvidia`
 - embeddings: `ollama` or `azure`
 
 Azure is the default demo path in `.env.example`.
@@ -26,6 +26,15 @@ AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
 
 # text-embedding-ada-002 requires 1536-dim vectors
 EMBEDDING_DIM=1536
+
+# HTTP/TLS controls for corporate cert/proxy environments
+HTTP2_ENABLED=true
+SSL_VERIFY=true
+SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+
+# tiktoken controls (used by Azure embeddings token-length checks)
+TIKTOKEN_ENABLED=true
+TIKTOKEN_CACHE_DIR=./data/cache/tiktoken
 ```
 
 Notes:
@@ -33,6 +42,9 @@ Notes:
 - Gov endpoints are supported (`https://<resource>.openai.azure.us`).
 - Commercial endpoints are also valid (`https://<resource>.openai.azure.com`).
 - Backward-compatible aliases still load: `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_EMBED_DEPLOYMENT`.
+- Main app uses `httpx` client wiring for Azure provider calls.
+- `SSL_CERT_FILE` is propagated to `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` envs for non-httpx paths.
+- If SSL inspection blocks tiktoken downloads, set `TIKTOKEN_ENABLED=false` (or pre-seed `TIKTOKEN_CACHE_DIR`).
 
 If `EMBEDDING_DIM` does not match the DB vector column, run:
 
@@ -56,6 +68,30 @@ OLLAMA_TEMPERATURE=0.2
 JUDGE_TEMPERATURE=0.0
 EMBEDDING_DIM=768
 ```
+
+## NVIDIA OpenAI-Compatible Endpoint (Chat/Judge Only)
+
+```bash
+LLM_PROVIDER=nvidia
+JUDGE_PROVIDER=nvidia
+EMBEDDINGS_PROVIDER=ollama   # or azure
+
+NVIDIA_OPENAI_ENDPOINT=https://<your-nvidia-endpoint>/v1
+NVIDIA_API_TOKEN=<bearer-token>
+NVIDIA_CHAT_MODEL=openaigpt-oss-120b
+NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
+NVIDIA_TEMPERATURE=0.0
+
+HTTP2_ENABLED=true
+SSL_VERIFY=false
+```
+
+Notes:
+
+- Authentication is sent as `Authorization: Bearer <token>`.
+- `NVIDIA_API_TOKEN` is preferred; legacy `Token` env var is also accepted.
+- Endpoint is normalized to include `/v1` if omitted.
+- Embeddings remain `ollama|azure` in v1. `EMBEDDINGS_PROVIDER=nvidia` is intentionally rejected by config validation.
 
 ## GGUF with Ollama
 

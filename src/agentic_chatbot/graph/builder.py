@@ -179,14 +179,30 @@ def build_multi_agent_graph(
     return compiled
 
 
+_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag"}
+
+
 def build_initial_state(
     session: ChatSession,
     user_text: str,
+    *,
+    suggested_agent: str = "",
 ) -> dict:
     """Construct the initial AgentState dict from a ChatSession + user input.
 
+    Args:
+        session:         Current chat session.
+        user_text:       The user's current message.
+        suggested_agent: Optional routing hint from the LLM router.
+            When set to a valid agent name the supervisor's first loop is
+            skipped — the graph enters the named specialist directly.
+            Pass ``""`` (default) to let the supervisor decide normally.
+
     This is a convenience function used by the orchestrator.
     """
+    # Pre-seed next_agent only for recognised specialist names.
+    next_agent = suggested_agent if suggested_agent in _VALID_SUGGESTED_AGENTS else ""
+
     return {
         "messages": list(session.messages) + [HumanMessage(content=user_text)],
         "tenant_id": session.tenant_id,
@@ -194,7 +210,7 @@ def build_initial_state(
         "uploaded_doc_ids": list(session.uploaded_doc_ids),
         "demo_mode": bool(getattr(session, "demo_mode", False)),
         "scratchpad": dict(session.scratchpad),
-        "next_agent": "",
+        "next_agent": next_agent,
         "rag_sub_tasks": [],
         "rag_results": [],
         "final_answer": "",

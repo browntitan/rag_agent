@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class NotebookSettings:
-    provider_mode: str  # azure | ollama | vllm
+    provider_mode: str  # azure | ollama | vllm | nvidia
 
     # Shared runtime
     repo_root: Path
@@ -28,6 +28,7 @@ class NotebookSettings:
     temperature: float
     judge_temperature: float
     http2_enabled: bool
+    httpx_trust_env: bool
     ssl_verify: bool
     ssl_cert_file: Optional[Path]
     tiktoken_enabled: bool
@@ -59,6 +60,14 @@ class NotebookSettings:
     vllm_judge_model: Optional[str]
     vllm_embed_model: Optional[str]
     vllm_use_openai_embeddings: bool
+
+    # NVIDIA OpenAI-compatible endpoint (chat/judge only)
+    nvidia_endpoint: Optional[str]
+    nvidia_token: Optional[str]
+    nvidia_chat_model: Optional[str]
+    nvidia_judge_model: Optional[str]
+    nvidia_temperature: float
+    nvidia_embeddings_backend: str  # ollama | azure | localhash
 
 
 def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -103,15 +112,21 @@ def _resolve_path(raw: str, *, base: Path) -> Path:
 
 
 def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
-    load_dotenv(dotenv_path=dotenv_path)
+    # In notebooks, users frequently edit `.env` and rerun cells in the same kernel.
+    # Force reload so updated transport/provider flags are applied deterministically.
+    load_dotenv(dotenv_path=dotenv_path, override=True)
 
     # runtime/config.py -> runtime -> demo_notebook -> repo root
     repo_root = Path(__file__).resolve().parents[2]
     demo_root = Path(__file__).resolve().parents[1]
 
     provider_mode = str(_getenv("NOTEBOOK_PROVIDER", "azure")).lower()
-    if provider_mode not in {"azure", "ollama", "vllm"}:
-        raise ValueError("NOTEBOOK_PROVIDER must be one of: azure, ollama, vllm")
+    if provider_mode not in {"azure", "ollama", "vllm", "nvidia"}:
+        raise ValueError("NOTEBOOK_PROVIDER must be one of: azure, ollama, vllm, nvidia")
+
+    nvidia_embeddings_backend = str(_getenv("NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND", "ollama")).lower()
+    if nvidia_embeddings_backend not in {"ollama", "azure", "localhash"}:
+        raise ValueError("NOTEBOOK_NVIDIA_EMBEDDINGS_BACKEND must be one of: ollama, azure, localhash")
 
     kb_dir = _resolve_path(
         str(_getenv("NOTEBOOK_KB_DIR", "../data/kb")),
@@ -153,6 +168,7 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         temperature=_as_float("NOTEBOOK_TEMPERATURE", 0.2),
         judge_temperature=_as_float("NOTEBOOK_JUDGE_TEMPERATURE", 0.0),
         http2_enabled=_as_bool("NOTEBOOK_HTTP2", True),
+        httpx_trust_env=_as_bool("NOTEBOOK_HTTPX_TRUST_ENV", True),
         ssl_verify=_as_bool("NOTEBOOK_SSL_VERIFY", True),
         ssl_cert_file=ssl_cert_file,
         tiktoken_enabled=_as_bool("NOTEBOOK_TIKTOKEN_ENABLED", True),
@@ -176,6 +192,12 @@ def load_settings(dotenv_path: Optional[str] = None) -> NotebookSettings:
         vllm_judge_model=_getenv("NOTEBOOK_VLLM_JUDGE_MODEL"),
         vllm_embed_model=_getenv("NOTEBOOK_VLLM_EMBED_MODEL"),
         vllm_use_openai_embeddings=_as_bool("NOTEBOOK_VLLM_USE_OPENAI_EMBEDDINGS", False),
+        nvidia_endpoint=_getenv("NOTEBOOK_NVIDIA_ENDPOINT"),
+        nvidia_token=_getenv("NOTEBOOK_NVIDIA_TOKEN", _getenv("Token")),
+        nvidia_chat_model=_getenv("NOTEBOOK_NVIDIA_CHAT_MODEL"),
+        nvidia_judge_model=_getenv("NOTEBOOK_NVIDIA_JUDGE_MODEL", _getenv("NOTEBOOK_NVIDIA_CHAT_MODEL")),
+        nvidia_temperature=_as_float("NOTEBOOK_NVIDIA_TEMPERATURE", 0.0),
+        nvidia_embeddings_backend=nvidia_embeddings_backend,
     )
 
     return settings
