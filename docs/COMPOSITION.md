@@ -19,12 +19,19 @@ This repo uses a **composition-by-routing** approach:
   - tasks requiring tools (math, memory, doc listing)
   - anything needing grounded document evidence/citations
   - multi-step requests
+  - spreadsheet/CSV analysis (routes to `data_analyst`)
 
 ## How RAG is invoked
 
 - **Primary path:** `rag_agent` is a specialist node in the supervisor graph (agent handoff).
 - **Fallback path:** `rag_agent_tool` is called by the legacy `GeneralAgent` as a tool.
 - **Upload kickoff:** orchestrator calls `run_rag_agent()` directly after ingest.
+
+## How data analysis is invoked
+
+- **Supervisor handoff:** when the supervisor detects spreadsheet/data analysis intent it routes to `data_analyst`.
+- **Tool loop:** `data_analyst` uses `load_dataset` → `inspect_columns` → `execute_code` (Docker sandbox) → reflection.
+- **Graceful degradation:** if Docker is not running, `AgentRegistry` disables `data_analyst` at startup and the supervisor never routes to it.
 
 ## Upload kickoff
 

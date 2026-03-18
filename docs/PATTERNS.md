@@ -18,11 +18,12 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 **What:** LLM supervisor routes to specialist nodes.
 
-**How:** `graph/builder.py` builds 6 nodes:
+**How:** `graph/builder.py` builds 7 nodes:
 
 - `supervisor`
 - `rag_agent`
 - `utility_agent`
+- `data_analyst`
 - `parallel_planner`
 - `rag_worker`
 - `rag_synthesizer`
@@ -138,9 +139,39 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 **What:** prompts live in Markdown files.
 
-**How:** `rag/skills.py` loads `data/skills/*.md`.
+**How:** `rag/skills.py` loads `data/skills/*.md` via `SkillsLoader` with mtime-based hot-reload and template variable substitution.
 
 **Why:** behavior tuning without code changes.
+
+---
+
+## 14. Dynamic agent registry
+
+**What:** supervisor's knowledge of available agents is derived at runtime, not hardcoded.
+
+**How:** `agents/agent_registry.py` maintains `AgentSpec` objects. `AgentRegistry.format_for_supervisor_prompt()` renders the agent list into the `{{available_agents}}` template variable in `supervisor_agent.md`. `valid_agent_names()` drives JSON validation of supervisor responses.
+
+**Why:** adding a new agent only requires registering it in the registry + wiring graph edges. The supervisor prompt and valid-response enforcement stay in sync automatically. Agents can be conditionally enabled (e.g., `data_analyst` requires Docker).
+
+---
+
+## 15. Isolated Docker sandbox execution
+
+**What:** user-submitted Python code runs in a fresh, network-disabled, memory-limited Docker container per call.
+
+**How:** `sandbox/docker_executor.py` uses the Docker SDK to create a container, copy files via `put_archive()`, execute code, capture stdout/stderr (truncated at 50 KB), and auto-remove the container. Used by `data_analyst` agent via `execute_code` tool.
+
+**Why:** strong isolation prevents code execution from accessing the host network, filesystem, or exceeding memory limits. Graceful degradation when Docker is unavailable.
+
+---
+
+## 16. Plan-verify-reflect data analysis workflow
+
+**What:** structured multi-step data analysis with mandatory inspection before execution and reflection after.
+
+**How:** `data/skills/data_analyst_agent.md` encodes a 5-step workflow (Load → Inspect → Plan → Execute → Verify → Reflect) enforced by the skill prompt. `make_data_analyst_tools()` provides `load_dataset`, `inspect_columns`, `execute_code`, `calculator`, and scratchpad tools.
+
+**Why:** prevents analysis errors from incorrect assumptions about data shape; reflection step ensures the agent validates output before synthesizing a response.
 
 ---
 
@@ -148,8 +179,8 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 | # | Pattern | Files | Notes |
 |---|---|---|---|
-| 1 | Router | `router/router.py` | deterministic BASIC/AGENT |
-| 2 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` | multi-agent routing |
+| 1 | Router | `router/router.py`, `router/llm_router.py` | deterministic BASIC/AGENT + LLM escalation |
+| 2 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` | multi-agent routing (7 nodes) |
 | 3 | Parallel RAG | `graph/nodes/rag_worker_node.py` | Send API fan-out |
 | 4 | ReAct loops | `agents/general_agent.py`, `rag/agent.py` | tool-calling loops |
 | 5 | RAG invocation modes | `graph/nodes/rag_node.py`, `tools/rag_agent_tool.py` | handoff primary, tool fallback |
@@ -160,4 +191,7 @@ This repo implements a production-oriented multi-agent document intelligence arc
 | 10 | Scratchpad | `agents/session.py`, `tools/rag_tools.py` | within-turn memory |
 | 11 | Persistent memory | `db/memory_store.py`, `tools/memory_tools.py` | cross-turn memory |
 | 12 | Structured ingest | `rag/ingest.py`, `rag/structure_detector.py`, `rag/clause_splitter.py` | clause-aware chunks |
-| 13 | Skills system | `rag/skills.py`, `data/skills/*.md` | prompt externalization |
+| 13 | Skills system | `rag/skills.py`, `rag/skills_loader.py`, `data/skills/*.md` | prompt externalization + hot-reload |
+| 14 | Dynamic agent registry | `agents/agent_registry.py`, `data/skills/supervisor_agent.md` | runtime agent discovery |
+| 15 | Docker sandbox | `sandbox/docker_executor.py`, `tools/data_analyst_tools.py` | isolated code execution |
+| 16 | Plan-verify-reflect | `data/skills/data_analyst_agent.md`, `graph/nodes/data_analyst_node.py` | structured data analysis |

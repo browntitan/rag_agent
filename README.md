@@ -1,6 +1,6 @@
 # Agentic RAG Chatbot v2
 
-A production-grade document intelligence chatbot built on LangChain/LangGraph. It combines a deterministic router, a multi-agent supervisor graph (RAG + utility specialists), and a legacy single-agent fallback path, all backed by PostgreSQL + pgvector. The system can reason across multiple documents, extract and compare clauses, identify requirements, and produce grounded answers with inline citations.
+A production-grade document intelligence chatbot built on LangChain/LangGraph. It combines a deterministic router, a multi-agent supervisor graph (RAG, utility, and data analyst specialists), and a legacy single-agent fallback path, all backed by PostgreSQL + pgvector. The system can reason across multiple documents, extract and compare clauses, identify requirements, analyse spreadsheets and CSVs in an isolated Docker sandbox, and produce grounded answers with inline citations.
 
 ---
 
@@ -42,6 +42,8 @@ This chatbot answers questions by autonomously deciding whether a query needs do
 | Document diff | "What are the differences between contract_v1 and contract_v2?" |
 | Clause-by-clause comparison | "Go through both termsets and compare their clauses one by one" |
 | Sequential document processing | "First read doc_1, then answer the questions in doc_2" |
+| Spreadsheet / CSV analysis | "What is the average revenue by region in the sales report?" |
+| Data computation | "Calculate the correlation between columns A and B in the dataset" |
 | Math | "What is 15% of £2,340,000?" |
 | Persistent memory | "Remember that the contract value is £2.3M" |
 
@@ -51,6 +53,7 @@ This chatbot answers questions by autonomously deciding whether a query needs do
 - PDF — native text extraction + automatic OCR fallback for scanned pages
 - Word documents (`.docx`)
 - Images (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.gif`) via PaddleOCR
+- Spreadsheets (`.xlsx`, `.xls`, `.csv`) — analysed by the data analyst agent using pandas in a Docker sandbox
 
 ---
 
@@ -67,9 +70,10 @@ Deterministic Router (BASIC | AGENT)
    │
    ├─ BASIC -> Basic Chat (LLM only, no tools)
    │
-   └─ AGENT (primary) -> Multi-Agent Supervisor Graph
+   └─ AGENT (primary) -> Multi-Agent Supervisor Graph (dynamic via AgentRegistry)
                         ├─ supervisor -> rag_agent -> supervisor
                         ├─ supervisor -> utility_agent -> supervisor
+                        ├─ supervisor -> data_analyst -> supervisor
                         ├─ supervisor -> parallel_planner
                         │              -> rag_worker x N
                         │              -> rag_synthesizer
@@ -98,7 +102,7 @@ Detailed C4 diagrams (including Level 3 runtime components) are in
 | Requirement | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | 3.11 recommended |
-| Docker | 24+ | For PostgreSQL and optional Ollama containers |
+| Docker | 24+ | For PostgreSQL and optional Ollama containers; also required for the data analyst sandbox |
 | Ollama **or** Azure OpenAI | — | One is required |
 | PostgreSQL 15/16 with pgvector | — | Easiest via Docker (see below) |
 | LangGraph | `>=0.2.0` | Installed automatically via `requirements.txt` |
@@ -515,7 +519,14 @@ GENERAL_AGENT_SKILLS_PATH=./data/skills/general_agent.md
 RAG_AGENT_SKILLS_PATH=./data/skills/rag_agent.md
 SUPERVISOR_AGENT_SKILLS_PATH=./data/skills/supervisor_agent.md
 UTILITY_AGENT_SKILLS_PATH=./data/skills/utility_agent.md
+DATA_ANALYST_AGENT_SKILLS_PATH=./data/skills/data_analyst_agent.md
 BASIC_CHAT_SKILLS_PATH=./data/skills/basic_chat.md
+
+# ── Data analyst Docker sandbox ───────────────────────────────────
+SANDBOX_DOCKER_IMAGE=python:3.12-slim
+SANDBOX_TIMEOUT_SECONDS=60
+SANDBOX_MEMORY_LIMIT=512m
+DATA_ANALYST_MAX_STEPS=10
 
 JUDGE_GRADING_PROMPT_PATH=./data/prompts/judge_grading.txt
 JUDGE_REWRITE_PROMPT_PATH=./data/prompts/judge_rewrite.txt
@@ -905,12 +916,13 @@ The agents' system prompts are loaded from Markdown files at runtime. You can ch
 
 ```
 data/skills/
-├── skills.md              ← Shared context injected into ALL agents
-├── general_agent.md       ← GeneralAgent + BasicChat system prompt (fallback path)
-├── rag_agent.md           ← RAGAgent system prompt with tool decision trees
-├── supervisor_agent.md    ← Supervisor routing rules (multi-agent graph)
-├── utility_agent.md       ← Utility agent instructions (calc, memory, list_docs)
-└── basic_chat.md          ← (optional) Dedicated BasicChat prompt
+├── skills.md                  ← Shared context injected into ALL agents
+├── general_agent.md           ← GeneralAgent + BasicChat system prompt (fallback path)
+├── rag_agent.md               ← RAGAgent system prompt with tool decision trees
+├── supervisor_agent.md        ← Supervisor routing rules — agent list injected from AgentRegistry
+├── utility_agent.md           ← Utility agent instructions (calc, memory, list_docs)
+├── data_analyst_agent.md      ← Data analyst plan-verify-reflect workflow + Docker sandbox rules
+└── basic_chat.md              ← (optional) Dedicated BasicChat prompt
 ```
 
 ### Hot-Reload Behaviour
@@ -921,6 +933,7 @@ data/skills/
 | `data/skills/rag_agent.md` | On every `run_rag_agent()` call | **Yes** — edit and the next RAG query picks it up |
 | `data/skills/supervisor_agent.md` | Once per graph build (per turn) | **Yes** — next AGENT turn picks it up |
 | `data/skills/utility_agent.md` | Once per graph build (per turn) | **Yes** — next AGENT turn picks it up |
+| `data/skills/data_analyst_agent.md` | Once per graph build (per turn) | **Yes** — next turn routing to `data_analyst` picks it up |
 | `data/skills/skills.md` | Same as the agent it's injected into | Follows its agent |
 
 > **RAG Agent live-editing:** Because `rag_agent.md` is reloaded per-turn, you can refine the RAG agent's decision rules mid-session. The change takes effect on the very next question that triggers RAG.
@@ -963,15 +976,18 @@ The AGENT path uses a **LangGraph supervisor graph** that routes to specialist a
 ```
 START → supervisor ──→ rag_agent ──→ supervisor (loop)
                   ├──→ utility_agent ──→ supervisor (loop)
+                  ├──→ data_analyst ──→ supervisor (loop)
                   ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
                   └──→ END
 ```
 
-**Supervisor** (`graph/supervisor.py`): An LLM node that reads conversation history and returns a JSON routing decision — which specialist agent to invoke next. Valid targets: `rag_agent`, `utility_agent`, `parallel_rag`, `__end__`. The supervisor loops: after each agent finishes, it decides whether to route to another agent or stop.
+**Supervisor** (`graph/supervisor.py`): An LLM node that reads conversation history and returns a JSON routing decision. Valid targets are loaded dynamically from `AgentRegistry` — adding a new agent automatically updates the supervisor's prompt and valid-response set. The supervisor loops: after each agent finishes, it decides whether to route to another agent or stop.
 
 **RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. All 11 RAG tools are unchanged.
 
 **Utility Agent** (`graph/nodes/utility_node.py`): A `create_react_agent` subgraph with `calculator`, `list_indexed_docs`, and `memory_*` tools.
+
+**Data Analyst Agent** (`graph/nodes/data_analyst_node.py`): A `create_react_agent` subgraph with 7 tools for loading and analysing Excel/CSV datasets. Code runs in an isolated Docker sandbox (network disabled, memory limited, auto-removed). The agent follows a mandatory plan-verify-reflect workflow enforced by `data/skills/data_analyst_agent.md`. Automatically disabled if Docker is unavailable.
 
 **Parallel RAG** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. Results are merged by `rag_synthesizer` through a reducer that supports parallel append plus explicit post-synthesis clearing.
 
@@ -1284,6 +1300,15 @@ You> Remember that the contract value is £2.3 million.
 You> (next session) What was the contract value we discussed?
 ```
 
+### Data Analysis (Excel / CSV)
+```bash
+python run.py ask -q "What is the average revenue by region?" -u ./sales_report.xlsx
+```
+```
+You> /upload ./budget_2025.csv
+You> Which department had the highest variance in spend versus budget?
+```
+
 ### Math
 ```
 You> What is 15% of £2,340,000?
@@ -1500,7 +1525,12 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `RAG_AGENT_SKILLS_PATH` | `./data/skills/rag_agent.md` | No | RAG-agent skills path |
 | `SUPERVISOR_AGENT_SKILLS_PATH` | `./data/skills/supervisor_agent.md` | No | Supervisor-agent skills path |
 | `UTILITY_AGENT_SKILLS_PATH` | `./data/skills/utility_agent.md` | No | Utility-agent skills path |
+| `DATA_ANALYST_AGENT_SKILLS_PATH` | `./data/skills/data_analyst_agent.md` | No | Data-analyst skills path |
 | `BASIC_CHAT_SKILLS_PATH` | `./data/skills/basic_chat.md` | No | Basic-chat skills path |
+| `SANDBOX_DOCKER_IMAGE` | `python:3.12-slim` | No | Docker image for data analyst code execution |
+| `SANDBOX_TIMEOUT_SECONDS` | `60` | No | Max seconds a sandbox container may run |
+| `SANDBOX_MEMORY_LIMIT` | `512m` | No | Docker memory limit for sandbox containers |
+| `DATA_ANALYST_MAX_STEPS` | `10` | No | Max LLM turns in the data analyst ReAct loop |
 | `JUDGE_GRADING_PROMPT_PATH` | `./data/prompts/judge_grading.txt` | No | Grading prompt template path |
 | `JUDGE_REWRITE_PROMPT_PATH` | `./data/prompts/judge_rewrite.txt` | No | Query-rewrite prompt template path |
 | `GROUNDED_ANSWER_PROMPT_PATH` | `./data/prompts/grounded_answer.txt` | No | Grounded-answer prompt template path |
@@ -1577,8 +1607,9 @@ langchain_agentic_chatbot_v2/
 │   │   ├── skills.md              # Shared context injected into all agents
 │   │   ├── general_agent.md       # GeneralAgent + BasicChat instructions + few-shot examples
 │   │   ├── rag_agent.md           # RAGAgent decision trees + failure recovery guide
-│   │   ├── supervisor_agent.md    # Supervisor routing rules (multi-agent graph)
+│   │   ├── supervisor_agent.md    # Supervisor routing rules — {{available_agents}} injected from AgentRegistry
 │   │   ├── utility_agent.md       # Utility agent instructions
+│   │   ├── data_analyst_agent.md  # Data analyst plan-verify-reflect workflow + sandbox rules
 │   │   └── basic_chat.md          # (optional) Dedicated BasicChat prompt
 │   ├── prompts/                   # Judge/synthesis prompt templates (path-configurable)
 │   │   ├── judge_grading.txt
@@ -1596,6 +1627,8 @@ langchain_agentic_chatbot_v2/
 │   ├── PATTERNS.md                # Agentic patterns implemented + summary table
 │   ├── RAG_AGENT_DESIGN.md        # RAGAgent loop design, all 11 tools, output contract
 │   ├── TOOLS_AND_TOOL_CALLING.md  # Tool design principles, LangGraph loop, all tool schemas
+│   ├── DATA_ANALYST_AGENT.md      # Data analyst agent — tools, Docker sandbox, workflow, examples
+│   ├── AGENT_REGISTRY.md          # AgentRegistry — dynamic agent discovery and supervisor integration
 │   ├── RAG_TOOL_CONTRACT.md       # Full rag_agent_tool output schema specification
 │   ├── PROVIDERS.md               # Ollama vs Azure OpenAI provider configuration
 │   ├── OBSERVABILITY_LANGFUSE.md  # Langfuse tracing setup and trace structure
@@ -1617,6 +1650,7 @@ langchain_agentic_chatbot_v2/
     │
     ├── agents/
     │   ├── orchestrator.py        # ChatbotApp — top-level router + multi-agent graph coordinator
+    │   ├── agent_registry.py      # AgentRegistry + AgentSpec — dynamic agent catalog for supervisor
     │   ├── general_agent.py       # Tool-calling loop agent (fallback path)
     │   ├── basic_chat.py          # Direct LLM call (no tools)
     │   └── session.py             # ChatSession (messages, scratchpad, uploaded_doc_ids)
@@ -1629,6 +1663,7 @@ langchain_agentic_chatbot_v2/
     │   └── nodes/
     │       ├── rag_node.py        # Single RAG agent node (wraps run_rag_agent)
     │       ├── utility_node.py    # Utility agent subgraph (calc, memory, list_docs)
+    │       ├── data_analyst_node.py      # Data analyst agent (pandas + Docker sandbox)
     │       ├── parallel_planner_node.py  # Validates sub-tasks before Send fan-out
     │       ├── rag_worker_node.py        # Parallel RAG worker (one per Send)
     │       └── rag_synthesizer_node.py   # Merges parallel RAG results
@@ -1658,14 +1693,21 @@ langchain_agentic_chatbot_v2/
     │   └── rewrite.py             # Query rewriting for failed retrievals
     │
     ├── router/
-    │   └── router.py              # Deterministic regex router (BASIC vs AGENT)
+    │   ├── router.py              # Deterministic regex router (BASIC vs AGENT)
+    │   └── llm_router.py          # Hybrid LLM router (low-confidence escalation)
+    │
+    ├── sandbox/
+    │   ├── docker_executor.py     # DockerSandboxExecutor — isolated per-execution containers
+    │   └── exceptions.py          # SandboxUnavailableError
     │
     ├── tools/
     │   ├── calculator.py          # Simple math tool
     │   ├── list_docs.py           # list_indexed_docs tool
     │   ├── memory_tools.py        # memory_save / memory_load / memory_list tools
     │   ├── rag_agent_tool.py      # rag_agent_tool — wraps RAGAgent as a LangChain tool
-    │   └── rag_tools.py           # 11 RAG specialist tools (resolve, search, extract, compare, ...)
+    │   ├── rag_tools.py           # 11 RAG specialist tools (resolve, search, extract, compare, ...)
+    │   ├── rag_tools_extended.py  # 5 extended RAG tools (query_rewriter, chunk_expander, ...)
+    │   └── data_analyst_tools.py  # 7 data analyst tools (load_dataset, inspect_columns, execute_code, ...)
     │
     └── observability/
         └── callbacks.py           # Langfuse LangChain callback wiring
