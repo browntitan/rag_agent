@@ -25,9 +25,10 @@ BASIC route
 
 AGENT route (primary)
   -> build_multi_agent_graph(...)
-  -> supervisor
+  -> supervisor (dynamic discovery via AgentRegistry)
      -> rag_agent
      -> utility_agent
+     -> data_analyst         <- NEW: pandas/Excel/CSV analysis in Docker sandbox
      -> parallel_planner -> rag_worker x N -> rag_synthesizer
      -> __end__
 
@@ -67,16 +68,19 @@ Escalation triggers include:
 
 ### 2. Supervisor-driven multi-agent orchestration
 
-The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with six nodes:
+The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with seven nodes:
 
 - `supervisor`
 - `rag_agent`
 - `utility_agent`
+- `data_analyst`
 - `parallel_planner`
 - `rag_worker`
 - `rag_synthesizer`
 
 The supervisor loops until it chooses `__end__` or loop safety triggers `SUPERVISOR_MAX_LOOPS`.
+
+Agent routing decisions are driven by `AgentRegistry` — the supervisor's awareness of available agents is rendered dynamically from the registry into the `{{available_agents}}` template variable in `supervisor_agent.md`.
 
 ### 3. RAG invocation modes
 
@@ -133,8 +137,19 @@ Prompt behavior is loaded from `data/skills/*.md` through `rag/skills.py`.
 
 Hot-reload behavior:
 
-- RAG/supervisor/utility prompts are loaded when those nodes are built
+- RAG/supervisor/utility/data_analyst prompts are loaded when those nodes are built
 - general agent and basic-chat prompts are loaded once in orchestrator init
+
+### 8. Dynamic agent registry
+
+`agents/agent_registry.py` provides `AgentRegistry` — a central catalog of `AgentSpec` objects.
+
+Benefits over hardcoding:
+- Adding a new agent only requires registering it in the registry + wiring graph edges. The supervisor prompt stays in sync automatically.
+- Agents can be conditionally enabled at runtime (e.g., `data_analyst` requires Docker).
+- `valid_agent_names()` drives supervisor response validation — unknown agents are rejected.
+
+When Docker is unavailable, `data_analyst` is `enabled=False` and disappears from the supervisor prompt. The system degrades cleanly with no code changes.
 
 ---
 
@@ -190,6 +205,8 @@ Callback setup: `src/agentic_chatbot/observability/callbacks.py`
 |---|---|
 | Router | `router/router.py` |
 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` |
+| Dynamic agent registry | `agents/agent_registry.py`, `data/skills/supervisor_agent.md` |
+| Data analyst agent | `graph/nodes/data_analyst_node.py`, `tools/data_analyst_tools.py`, `sandbox/docker_executor.py` |
 | Parallel RAG | `graph/nodes/parallel_planner_node.py`, `graph/nodes/rag_worker_node.py`, `graph/nodes/rag_synthesizer_node.py` |
 | ReAct loops | `agents/general_agent.py`, `rag/agent.py` |
 | RAG tool wrapper (fallback path) | `tools/rag_agent_tool.py` |

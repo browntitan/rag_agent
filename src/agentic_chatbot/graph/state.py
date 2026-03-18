@@ -58,7 +58,7 @@ class AgentState(MessagesState):
     scratchpad: Dict[str, str] = {}
 
     # Supervisor routing
-    next_agent: str = ""  # rag_agent | utility_agent | parallel_rag | __end__
+    next_agent: str = ""  # rag_agent | utility_agent | parallel_rag | data_analyst | __end__
 
     # Parallel RAG planner populates these before Send fan-out
     rag_sub_tasks: List[Dict[str, Any]] = []

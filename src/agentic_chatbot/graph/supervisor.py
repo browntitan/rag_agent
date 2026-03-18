@@ -17,23 +17,39 @@ from agentic_chatbot.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_VALID_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "__end__"}
+# Fallback valid agents used when no registry is provided
+_VALID_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst", "__end__"}
 
 
-def _build_supervisor_prompt(settings: Settings) -> str:
-    """Load the supervisor system prompt from skills or use the default."""
+def _build_supervisor_prompt(settings: Settings, registry: Any = None) -> str:
+    """Load the supervisor system prompt from skills or use the default.
+
+    When a registry is provided, injects the ``{{available_agents}}`` template
+    variable so the prompt lists all currently-enabled agents dynamically.
+    """
     # Lazy import to avoid circular dependency at module level
     from agentic_chatbot.rag.skills import load_supervisor_skills  # noqa: PLC0415
 
-    return load_supervisor_skills(settings)
+    context: Optional[Dict[str, Any]] = None
+    if registry is not None:
+        context = {"available_agents": registry.format_for_supervisor_prompt()}
+
+    return load_supervisor_skills(settings, context=context)
 
 
-def _parse_supervisor_response(content: str) -> Dict[str, Any]:
+def _parse_supervisor_response(content: str, valid_agents: Optional[set] = None) -> Dict[str, Any]:
     """Extract the routing decision from the supervisor LLM response.
 
     Expects a JSON block with at least ``next_agent``.  Falls back to
     heuristic keyword matching if JSON parsing fails.
+
+    Args:
+        content:      The raw LLM response text.
+        valid_agents: Set of valid agent names. Defaults to ``_VALID_AGENTS``.
     """
+    if valid_agents is None:
+        valid_agents = _VALID_AGENTS
+
     # Try to extract JSON from the response
     text = content.strip()
 
@@ -42,7 +58,7 @@ def _parse_supervisor_response(content: str) -> Dict[str, Any]:
         data = json.loads(text)
         if isinstance(data, dict) and "next_agent" in data:
             agent = data["next_agent"]
-            if agent not in _VALID_AGENTS:
+            if agent not in valid_agents:
                 logger.warning("Supervisor returned unknown agent %r, defaulting to rag_agent", agent)
                 data["next_agent"] = "rag_agent"
             return data
@@ -58,7 +74,7 @@ def _parse_supervisor_response(content: str) -> Dict[str, Any]:
                 data = json.loads(text[start:end].strip())
                 if isinstance(data, dict) and "next_agent" in data:
                     agent = data["next_agent"]
-                    if agent not in _VALID_AGENTS:
+                    if agent not in valid_agents:
                         data["next_agent"] = "rag_agent"
                     return data
             except (json.JSONDecodeError, TypeError, ValueError):
@@ -72,6 +88,8 @@ def _parse_supervisor_response(content: str) -> Dict[str, Any]:
         return {"next_agent": "rag_agent", "reasoning": "keyword_fallback"}
     if any(kw in lower for kw in ("calcul", "math", "memory", "remember", "list document", "list indexed")):
         return {"next_agent": "utility_agent", "reasoning": "keyword_fallback"}
+    if any(kw in lower for kw in ("data", "excel", "csv", "spreadsheet", "analyse data", "analyze data", "dataset", "dataframe")):
+        return {"next_agent": "data_analyst", "reasoning": "keyword_fallback"}
 
     # Default: answer directly
     return {"next_agent": "__end__", "direct_answer": text, "reasoning": "no_json_found"}
@@ -82,13 +100,15 @@ def make_supervisor_node(
     settings: Settings,
     callbacks: Optional[List[Any]] = None,
     max_loops: int = 5,
+    registry: Any = None,
 ) -> Callable[[AgentState], Dict[str, Any]]:
     """Create the supervisor node function.
 
     The returned callable takes ``AgentState`` and returns a partial
     state update dict.
     """
-    system_prompt = _build_supervisor_prompt(settings)
+    system_prompt = _build_supervisor_prompt(settings, registry=registry)
+    valid_agents = registry.valid_agent_names() if registry is not None else _VALID_AGENTS
 
     loop_count = 0
 
@@ -157,7 +177,7 @@ def make_supervisor_node(
         )
 
         content = getattr(resp, "content", str(resp))
-        parsed = _parse_supervisor_response(content)
+        parsed = _parse_supervisor_response(content, valid_agents=valid_agents)
 
         updates: Dict[str, Any] = {
             "next_agent": parsed["next_agent"],

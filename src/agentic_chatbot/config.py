@@ -129,6 +129,13 @@ class Settings:
     tavily_api_key: str | None          # env: TAVILY_API_KEY
     web_search_enabled: bool            # env: WEB_SEARCH_ENABLED (default: False)
 
+    # --- Data Analyst / Sandbox ---
+    sandbox_docker_image: str           # env: SANDBOX_DOCKER_IMAGE (default: "python:3.12-slim")
+    sandbox_timeout_seconds: int        # env: SANDBOX_TIMEOUT_SECONDS (default: 60)
+    sandbox_memory_limit: str           # env: SANDBOX_MEMORY_LIMIT (default: "512m")
+    data_analyst_max_steps: int         # env: DATA_ANALYST_MAX_STEPS (default: 10)
+    data_analyst_skills_path: Path      # constructed: skills_dir / "data_analyst_agent.md"
+
 
 def _getenv(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
@@ -306,6 +313,13 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     tavily_api_key = _getenv("TAVILY_API_KEY")
     web_search_enabled = _as_bool("WEB_SEARCH_ENABLED", False)
 
+    # Data Analyst / Sandbox
+    sandbox_docker_image = str(_getenv("SANDBOX_DOCKER_IMAGE", "python:3.12-slim"))
+    sandbox_timeout_seconds = _as_int("SANDBOX_TIMEOUT_SECONDS", 60)
+    sandbox_memory_limit = str(_getenv("SANDBOX_MEMORY_LIMIT", "512m"))
+    data_analyst_max_steps = _as_int("DATA_ANALYST_MAX_STEPS", 10)
+    data_analyst_skills_path = Path(_getenv("DATA_ANALYST_SKILLS_PATH", str(skills_dir / "data_analyst_agent.md")))
+
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
         raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
@@ -406,4 +420,9 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         llm_router_confidence_threshold=llm_router_confidence_threshold,
         tavily_api_key=tavily_api_key,
         web_search_enabled=web_search_enabled,
+        sandbox_docker_image=sandbox_docker_image,
+        sandbox_timeout_seconds=sandbox_timeout_seconds,
+        sandbox_memory_limit=sandbox_memory_limit,
+        data_analyst_max_steps=data_analyst_max_steps,
+        data_analyst_skills_path=data_analyst_skills_path,
     )

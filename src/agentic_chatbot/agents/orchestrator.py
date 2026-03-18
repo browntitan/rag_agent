@@ -352,6 +352,9 @@ class ChatbotApp:
         try:
             from agentic_chatbot.graph import build_multi_agent_graph  # noqa: PLC0415
             from agentic_chatbot.graph.builder import build_initial_state  # noqa: PLC0415
+            from agentic_chatbot.agents.agent_registry import AgentRegistry  # noqa: PLC0415
+
+            registry = AgentRegistry(self.ctx.settings)
 
             graph = build_multi_agent_graph(
                 chat_llm=self.ctx.providers.chat,
@@ -360,6 +363,7 @@ class ChatbotApp:
                 stores=self.ctx.stores,
                 session=session,
                 callbacks=callbacks,
+                registry=registry,
             )
 
             initial_state = build_initial_state(session, user_text, suggested_agent=suggested_agent)

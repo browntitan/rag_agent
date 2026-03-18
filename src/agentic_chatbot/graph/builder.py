@@ -1,13 +1,14 @@
 """Multi-agent graph builder — assembles and compiles the StateGraph.
 
 The graph implements a supervisor pattern: a central LLM-based supervisor
-routes to specialist agent nodes (RAG, utility) and supports parallel
-fan-out via the Send API for multi-document comparison tasks.
+routes to specialist agent nodes (RAG, utility, data_analyst) and supports
+parallel fan-out via the Send API for multi-document comparison tasks.
 
 Graph topology::
 
     START → supervisor ──→ rag_agent ──→ supervisor (loop)
                      ├──→ utility_agent ──→ supervisor (loop)
+                     ├──→ data_analyst ──→ supervisor (loop)
                      ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
                      └──→ END
 """
@@ -36,6 +37,7 @@ def build_multi_agent_graph(
     stores: KnowledgeStores,
     session: ChatSession,
     callbacks: Optional[List[Any]] = None,
+    registry: Any = None,
 ) -> Any:
     """Build and compile the multi-agent LangGraph.
 
@@ -53,6 +55,9 @@ def build_multi_agent_graph(
         The current chat session (used to build the SessionProxy).
     callbacks : list, optional
         Langfuse / LangChain callbacks.
+    registry : AgentRegistry, optional
+        Agent registry for dynamic supervisor prompt generation. When provided,
+        the data_analyst node is included only if Docker is available.
 
     Returns
     -------
@@ -65,6 +70,7 @@ def build_multi_agent_graph(
     from agentic_chatbot.graph.nodes.rag_worker_node import make_rag_worker_node
     from agentic_chatbot.graph.nodes.rag_synthesizer_node import make_rag_synthesizer_node
     from agentic_chatbot.graph.nodes.parallel_planner_node import parallel_planner_node
+    from agentic_chatbot.graph.nodes.data_analyst_node import make_data_analyst_node
 
     # Build a session proxy for tool factories
     session_proxy = SessionProxy(
@@ -78,10 +84,16 @@ def build_multi_agent_graph(
     # How many supervisor loops before forcing __end__
     max_loops = getattr(settings, "supervisor_max_loops", 5)
 
+    # Determine if data_analyst is enabled (requires Docker)
+    data_analyst_enabled = False
+    if registry is not None:
+        spec = registry.get("data_analyst")
+        data_analyst_enabled = spec is not None and spec.enabled
+
     # ── Create node functions ──────────────────────────────────────────
 
     supervisor_fn = make_supervisor_node(
-        chat_llm, settings, callbacks=callbacks, max_loops=max_loops,
+        chat_llm, settings, callbacks=callbacks, max_loops=max_loops, registry=registry,
     )
     rag_agent_fn = make_rag_agent_node(
         settings, stores, chat_llm, judge_llm, callbacks=callbacks,
@@ -96,6 +108,12 @@ def build_multi_agent_graph(
         chat_llm, settings=settings, callbacks=callbacks,
     )
 
+    data_analyst_fn = None
+    if data_analyst_enabled:
+        data_analyst_fn = make_data_analyst_node(
+            chat_llm, settings, stores, session_proxy, callbacks=callbacks,
+        )
+
     # ── Build the graph ────────────────────────────────────────────────
 
     graph = StateGraph(AgentState)
@@ -107,6 +125,9 @@ def build_multi_agent_graph(
     graph.add_node("parallel_planner", parallel_planner_node)
     graph.add_node("rag_worker", rag_worker_fn)
     graph.add_node("rag_synthesizer", rag_synthesizer_fn)
+
+    if data_analyst_fn is not None:
+        graph.add_node("data_analyst", data_analyst_fn)
 
     # ── Edges ──────────────────────────────────────────────────────────
 
@@ -122,23 +143,36 @@ def build_multi_agent_graph(
             return "utility_agent"
         elif next_agent == "parallel_rag":
             return "parallel_planner"
+        elif next_agent == "data_analyst" and data_analyst_fn is not None:
+            return "data_analyst"
+        elif next_agent == "data_analyst" and data_analyst_fn is None:
+            # Docker not available — fall back to rag_agent or end
+            logger.warning("Supervisor routed to data_analyst but Docker is unavailable; falling back to rag_agent")
+            return "rag_agent"
         else:
             return END
+
+    conditional_edges_map: dict = {
+        "rag_agent": "rag_agent",
+        "utility_agent": "utility_agent",
+        "parallel_planner": "parallel_planner",
+        END: END,
+    }
+    if data_analyst_fn is not None:
+        conditional_edges_map["data_analyst"] = "data_analyst"
 
     graph.add_conditional_edges(
         "supervisor",
         route_from_supervisor,
-        {
-            "rag_agent": "rag_agent",
-            "utility_agent": "utility_agent",
-            "parallel_planner": "parallel_planner",
-            END: END,
-        },
+        conditional_edges_map,
     )
 
     # Agent → supervisor (loop back after each agent finishes)
     graph.add_edge("rag_agent", "supervisor")
     graph.add_edge("utility_agent", "supervisor")
+
+    if data_analyst_fn is not None:
+        graph.add_edge("data_analyst", "supervisor")
 
     # Parallel planner → fan-out to rag_workers via Send API
     def fan_out_rag_workers(state: AgentState) -> list:
@@ -174,12 +208,18 @@ def build_multi_agent_graph(
     # ── Compile ────────────────────────────────────────────────────────
 
     compiled = graph.compile()
-    logger.info("Multi-agent graph compiled: 6 nodes, supervisor + rag_agent + utility + parallel_rag")
+    node_count = 7 if data_analyst_fn is not None else 6
+    analyst_note = " + data_analyst" if data_analyst_fn is not None else ""
+    logger.info(
+        "Multi-agent graph compiled: %d nodes, supervisor + rag_agent + utility + parallel_rag%s",
+        node_count,
+        analyst_note,
+    )
 
     return compiled
 
 
-_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag"}
+_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst"}
 
 
 def build_initial_state(
