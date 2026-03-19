@@ -137,6 +137,16 @@ class ChatbotApp:
         )
         session.uploaded_doc_ids.extend([d for d in doc_ids if d not in session.uploaded_doc_ids])
 
+        # Copy uploaded files into the session workspace so the Docker sandbox
+        # can access them immediately via the bind-mounted /workspace directory.
+        if session.workspace is not None:
+            for up in upload_paths:
+                try:
+                    session.workspace.copy_file(up)
+                    logger.debug("ingest: copied upload %s into session workspace", up.name)
+                except Exception as ws_exc:
+                    logger.warning("ingest: could not copy %s to workspace: %s", up.name, ws_exc)
+
         if not doc_ids:
             return [], "No documents were ingested (files missing or already indexed)."
 
@@ -254,6 +264,18 @@ class ChatbotApp:
         """Process one user turn. Optionally ingest uploads first."""
 
         upload_paths = upload_paths or []
+
+        # Lazily open the session workspace on the first turn so that the Docker
+        # sandbox has a persistent bind-mounted directory for the entire session.
+        if session.workspace is None and self.ctx.settings.workspace_dir is not None:
+            try:
+                from agentic_chatbot.sandbox.session_workspace import SessionWorkspace  # noqa: PLC0415
+                ws = SessionWorkspace.for_session(session.session_id, self.ctx.settings.workspace_dir)
+                ws.open()
+                session.workspace = ws
+                logger.debug("Opened session workspace at %s", ws.root)
+            except Exception as ws_exc:
+                logger.warning("Could not open session workspace: %s", ws_exc)
 
         # Ensure KB is available for this tenant before routing.
         ensure_kb_indexed(self.ctx.settings, self.ctx.stores, tenant_id=session.tenant_id)
