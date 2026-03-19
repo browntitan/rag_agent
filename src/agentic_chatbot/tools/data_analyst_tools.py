@@ -348,7 +348,15 @@ def make_data_analyst_tools(
         user_keys = [k for k in session.scratchpad.keys() if not k.startswith("dataset_")]
         return json.dumps({"keys": user_keys, "count": len(user_keys)})
 
-    return [
+    # skills search — lets the agent look up operational guidance at runtime
+    skills_search = None
+    try:
+        from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
+        skills_search = make_skills_search_tool(settings)
+    except Exception as e:
+        logger.warning("Could not build search_skills tool: %s", e)
+
+    tools = [
         load_dataset,
         inspect_columns,
         execute_code,
@@ -357,6 +365,9 @@ def make_data_analyst_tools(
         scratchpad_read,
         scratchpad_list,
     ]
+    if skills_search is not None:
+        tools.append(skills_search)
+    return tools
 
 
 def _safe_float(value: Any) -> Optional[float]:

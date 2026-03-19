@@ -6,12 +6,15 @@ current KnowledgeStores and ChatSession instances.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, List
 
 from langchain.tools import tool
 
 from agentic_chatbot.config import Settings
 from agentic_chatbot.rag.stores import KnowledgeStores
+
+logger = logging.getLogger(__name__)
 
 
 def _chunk_to_dict(ch: Any) -> dict:
@@ -49,11 +52,12 @@ def make_all_rag_tools(
     *,
     settings: Settings | None = None,
 ) -> List[Any]:
-    """Return all 11 RAG specialist tools bound to stores and session.
+    """Return all 12 RAG specialist tools bound to stores and session.
 
     Args:
-        stores:  KnowledgeStores with chunk_store, doc_store, memory_store.
-        session: ChatSession — provides session.scratchpad dict.
+        stores:   KnowledgeStores with chunk_store, doc_store, memory_store.
+        session:  ChatSession — provides session.scratchpad dict.
+        settings: Settings — required for the search_skills tool.
     """
     top_k_vector = max(1, int(getattr(settings, "rag_top_k_vector", 8)))
     top_k_keyword = max(1, int(getattr(settings, "rag_top_k_keyword", 8)))
@@ -369,7 +373,16 @@ def make_all_rag_tools(
         keys = list(session.scratchpad.keys())
         return json.dumps({"keys": keys, "count": len(keys)})
 
-    return [
+    # skills search — lets the agent look up operational guidance at runtime
+    skills_search = None
+    if settings is not None:
+        try:
+            from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
+            skills_search = make_skills_search_tool(settings)
+        except Exception as e:
+            logger.warning("Could not build search_skills tool: %s", e)
+
+    tools = [
         resolve_document,
         search_document,
         search_all_documents,
@@ -382,3 +395,6 @@ def make_all_rag_tools(
         scratchpad_read,
         scratchpad_list,
     ]
+    if skills_search is not None:
+        tools.append(skills_search)
+    return tools

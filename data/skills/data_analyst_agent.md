@@ -54,6 +54,8 @@ You MUST follow this workflow for every analysis request:
 5. **scratchpad_write(key, value)** — Save observations, plans, and intermediate findings.
 6. **scratchpad_read(key)** — Retrieve a previously saved value.
 7. **scratchpad_list()** — List all scratchpad keys.
+8. **search_skills(query)** — Search the skills library for operational guidance. Use when you encounter an unfamiliar data format, need to look up a procedure, or are uncertain about the correct approach.
+   Examples: `search_skills("multi-sheet Excel inspection")`, `search_skills("handling null values in pandas")`
 
 ### Rules
 
