@@ -3,6 +3,7 @@
 This codebase uses LangChain tools with LangGraph ReAct agents.
 
 - `utility_agent` (in the multi-agent graph) uses utility tools.
+- `data_analyst` (in the multi-agent graph) uses data analyst tools.
 - `run_rag_agent()` uses 11 RAG specialist tools.
 - Legacy fallback `GeneralAgent` uses utility tools + `rag_agent_tool`.
 
@@ -67,6 +68,9 @@ recursion_limit = (max(MAX_AGENT_STEPS, MAX_TOOL_CALLS) + 1) * 2 + 1
 
 # RAGAgent
 recursion_limit = (MAX_RAG_AGENT_STEPS + MAX_TOOL_CALLS + 1) * 2 + 1
+
+# DataAnalystAgent
+recursion_limit = (DATA_ANALYST_MAX_STEPS + MAX_TOOL_CALLS + 1) * 2 + 1
 ```
 
 ---
@@ -108,6 +112,29 @@ Built by `make_all_rag_tools(stores, session)` in `tools/rag_tools.py`:
 - `scratchpad_read`
 - `scratchpad_list`
 
+### Data analyst tools (7)
+
+Built by `make_data_analyst_tools(stores, session, *, settings)` in `tools/data_analyst_tools.py`. Used exclusively by the `data_analyst` agent node.
+
+| Tool | Args | Purpose |
+|---|---|---|
+| `load_dataset` | `doc_id` | Resolve doc → read file → return schema, shape, head (5 rows), dtypes. Stores host path in scratchpad. **Always call first.** |
+| `inspect_columns` | `doc_id`, `columns` | Per-column stats. Numeric: mean/std/min/max/percentiles. String: unique count, top-5 value frequencies. |
+| `execute_code` | `code`, `doc_ids` | Run Python in Docker sandbox. Files mounted at `/workspace/`. pandas/openpyxl/xlrd pre-installed. Returns stdout, stderr, success, execution_time. |
+| `calculator` | `expression` | Reused from utility tools. Quick arithmetic without spinning up a container. |
+| `scratchpad_write` | `key`, `value` | Save intermediate observation or plan for later reference. |
+| `scratchpad_read` | `key` | Retrieve a saved scratchpad value. |
+| `scratchpad_list` | _(none)_ | List all scratchpad keys in the current session. |
+
+**Mandatory workflow:** Load → Inspect → Plan → Execute → Verify → Reflect. The `data_analyst_agent.md` skill file enforces this order.
+
+**Docker sandbox properties:**
+- Fresh container per `execute_code` call, auto-removed after use
+- Network disabled (`network_disabled=True`)
+- Memory limited (default `512m`, configurable via `SANDBOX_MEMORY_LIMIT`)
+- Timeout: default 60 s, configurable via `SANDBOX_TIMEOUT_SECONDS`
+- stdout/stderr each truncated to 50 KB (`truncated=True` flag when cut)
+
 ---
 
 ## Key return-shape notes
@@ -128,6 +155,7 @@ Built by `make_all_rag_tools(stores, session)` in `tools/rag_tools.py`:
 | `max_steps` | `MAX_AGENT_STEPS` | 10 | max LLM calls in `GeneralAgent` fallback path |
 | `max_tool_calls` | `MAX_TOOL_CALLS` | 12 | max tool invocations in General/RAG loops |
 | `max_rag_agent_steps` | `MAX_RAG_AGENT_STEPS` | 8 | max LLM turns in RAG ReAct loop |
+| `data_analyst_max_steps` | `DATA_ANALYST_MAX_STEPS` | 10 | max LLM turns in data analyst ReAct loop |
 
 When recursion budget is hit, code catches the stop condition and returns a graceful partial response.
 

@@ -97,14 +97,25 @@ _DEFAULTS: Dict[str, str] = {
         "Answer the user's question directly and concisely. "
         "If you are unsure, say so and suggest what information would help."
     ),
+    "data_analyst_agent": (
+        "You are a data analyst agent. Analyze tabular data (Excel, CSV) using Python pandas.\n\n"
+        "Operating rules:\n"
+        "1. ALWAYS call load_dataset first to understand the data structure.\n"
+        "2. Call inspect_columns to understand distributions and nulls before coding.\n"
+        "3. Write a plan to the scratchpad before executing code.\n"
+        "4. Use execute_code to run Python in a secure Docker sandbox.\n"
+        "5. Verify results make sense before reporting.\n"
+        "6. Summarize findings clearly in natural language.\n"
+    ),
 }
 
 # Sections that MUST appear (case-insensitive) in a valid skills file.
 # Missing sections emit a warning — they never block execution.
 _REQUIRED_SECTIONS: Dict[str, list] = {
-    "rag_agent":        ["Operating rules"],
-    "supervisor_agent": ["next_agent"],
-    "general_agent":    ["Operating rules"],
+    "rag_agent":          ["Operating rules"],
+    "supervisor_agent":   ["next_agent"],
+    "general_agent":      ["Operating rules"],
+    "data_analyst_agent": ["Operating Rules"],
 }
 
 
@@ -236,12 +247,13 @@ class SkillsLoader:
     def _get_path(self, agent_key: str) -> Optional[Path]:
         s = self._settings
         mapping: Dict[str, Optional[Path]] = {
-            "shared":           getattr(s, "shared_skills_path", None),
-            "general_agent":    getattr(s, "general_agent_skills_path", None),
-            "rag_agent":        getattr(s, "rag_agent_skills_path", None),
-            "supervisor_agent": getattr(s, "supervisor_agent_skills_path", None),
-            "utility_agent":    getattr(s, "utility_agent_skills_path", None),
-            "basic_chat":       getattr(s, "basic_chat_skills_path", None),
+            "shared":             getattr(s, "shared_skills_path", None),
+            "general_agent":      getattr(s, "general_agent_skills_path", None),
+            "rag_agent":          getattr(s, "rag_agent_skills_path", None),
+            "supervisor_agent":   getattr(s, "supervisor_agent_skills_path", None),
+            "utility_agent":      getattr(s, "utility_agent_skills_path", None),
+            "basic_chat":         getattr(s, "basic_chat_skills_path", None),
+            "data_analyst_agent": getattr(s, "data_analyst_skills_path", None),
         }
         return mapping.get(agent_key)
 

@@ -113,9 +113,10 @@ flowchart LR
     fallback["Legacy Fallback\nrun_general_agent()"]
     fallbackTools["Fallback Toolset\ncalculator/list_docs/memory_*/rag_agent_tool"]
 
-    sup["Supervisor Node"]
+    sup["Supervisor Node\n(dynamic via AgentRegistry)"]
     ragNode["RAG Node"]
     utilNode["Utility Node"]
+    dataNode["Data Analyst Node\n(pandas + Docker sandbox)"]
     planner["Parallel Planner"]
     worker["RAG Worker(s)"]
     synth["RAG Synthesizer"]
@@ -152,10 +153,12 @@ flowchart LR
     graph --> sup
     sup -->|"rag_agent"| ragNode
     sup -->|"utility_agent"| utilNode
+    sup -->|"data_analyst"| dataNode
     sup -->|"parallel_rag"| planner
     planner --> worker
     worker --> synth
     synth --> sup
+    dataNode --> sup
 
     graph -->|"capability/config error only"| fallback
     fallback --> fallbackTools
@@ -198,6 +201,8 @@ flowchart LR
 | Basic Chat Agent | Direct LLM response without tools | `src/agentic_chatbot/agents/basic_chat.py` |
 | Supervisor Graph Executor | Supervisor-driven specialist orchestration | `src/agentic_chatbot/graph/builder.py`, `src/agentic_chatbot/graph/supervisor.py` |
 | Utility Node | Calculator/list-docs/memory tool loop | `src/agentic_chatbot/graph/nodes/utility_node.py` |
+| Data Analyst Node | Pandas/Excel/CSV analysis via Docker sandbox; auto-disabled if Docker unavailable | `src/agentic_chatbot/graph/nodes/data_analyst_node.py`, `src/agentic_chatbot/sandbox/docker_executor.py` |
+| Agent Registry | Dynamic agent catalog; renders `{{available_agents}}` into supervisor prompt | `src/agentic_chatbot/agents/agent_registry.py` |
 | RAG Node + Worker(s) | Single and parallel RAG execution adapters | `src/agentic_chatbot/graph/nodes/rag_node.py`, `src/agentic_chatbot/graph/nodes/rag_worker_node.py` |
 | RAG Synthesizer | Merge worker outputs and clear worker state | `src/agentic_chatbot/graph/nodes/rag_synthesizer_node.py`, `src/agentic_chatbot/graph/state.py` |
 | Legacy Fallback | Single-agent ReAct path for capability/config fallback | `src/agentic_chatbot/agents/general_agent.py` |
@@ -228,6 +233,8 @@ So in current architecture, RAG is primarily orchestrated through agent handoffs
 
 - Matches current routing behavior: `BASIC` or `AGENT` via deterministic router.
 - Matches fallback behavior: only capability/config failures fall back to legacy agent.
-- Matches graph topology: supervisor, utility, rag node, parallel planner, rag workers, synthesizer.
+- Matches graph topology: supervisor, utility, data_analyst, rag node, parallel planner, rag workers, synthesizer.
+- Matches dynamic agent discovery: `AgentRegistry` drives supervisor prompt and valid-response validation.
 - Matches persistence: single PostgreSQL backend for documents/chunks/memory.
 - Matches observability: callback-driven Langfuse integration (optional).
+- `data_analyst` node auto-disabled when Docker daemon is unreachable.

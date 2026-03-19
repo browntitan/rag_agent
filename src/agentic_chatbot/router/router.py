@@ -9,7 +9,7 @@ class RouterDecision:
     route: str  # "BASIC" | "AGENT"
     confidence: float
     reasons: list[str]
-    suggested_agent: str = ""          # "" | "rag_agent" | "utility_agent" | "parallel_rag"
+    suggested_agent: str = ""          # "" | "rag_agent" | "utility_agent" | "parallel_rag" | "data_analyst"
     router_method: str = "deterministic"  # "deterministic" | "llm" | "llm_fallback"
 
 
@@ -19,6 +19,16 @@ _TOOL_VERBS = re.compile(
     r"look\s+up|search|find|retrieve|query|open\s+file|summarize\s+this|" +
     r"upload|attached|attachment|document|pdf|spreadsheet|" +
     r"compare\s+and\s+recommend|step\s+by\s+step|first\s+do\s+.*\s+then\s+" +
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+_DATA_ANALYSIS_HINTS = re.compile(
+    r"\b(" +
+    r"analyze\s+data|analyse\s+data|excel|csv|spreadsheet|dataframe|pandas|" +
+    r"average|mean|median|group\s+by|pivot|aggregate|filter\s+rows|" +
+    r"data\s+analysis|data\s+exploration|statistics|histogram|distribution|" +
+    r"sum\s+of|count\s+of|total\s+by|breakdown\s+by|top\s+\d+\s+by" +
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -64,6 +74,16 @@ def route_message(
 
     if _HIGH_STAKES_HINTS.search(user_text):
         reasons.append("high_stakes_topic")
+
+    # Data analysis escalation — suggest data_analyst agent directly
+    if _DATA_ANALYSIS_HINTS.search(user_text):
+        reasons.append("data_analysis_intent")
+        return RouterDecision(
+            route="AGENT",
+            confidence=0.90,
+            reasons=reasons,
+            suggested_agent="data_analyst",
+        )
 
     # Heuristic complexity: long messages tend to benefit from the agent.
     if len(user_text.strip()) > 600:

@@ -113,3 +113,12 @@ def load_basic_chat_skills(
 ) -> str:
     """Return the BasicChat system prompt (shared preamble + agent-specific)."""
     return get_skills_loader(settings).load("basic_chat", context=context)
+
+
+def load_data_analyst_skills(
+    settings: Settings,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the Data Analyst agent system prompt (shared preamble + agent-specific)."""
+    return get_skills_loader(settings).load("data_analyst_agent", context=context)

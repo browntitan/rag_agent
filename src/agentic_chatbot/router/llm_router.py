@@ -39,7 +39,7 @@ from agentic_chatbot.router.router import RouterDecision, route_message
 
 logger = logging.getLogger(__name__)
 
-_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", ""}
+_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst", ""}
 
 # ---------------------------------------------------------------------------
 # LLM output schema
@@ -58,6 +58,7 @@ Classify the incoming user message as either BASIC or AGENT.
 - Is a high-stakes domain (legal, medical, financial, compliance, security)
 - Requires multi-step reasoning or tool use
 - Contains file attachments or references to uploaded documents
+- Involves data analysis, spreadsheets, Excel, CSV files, statistics, or pandas operations
 
 ### Route to BASIC when the message:
 - Is a greeting or small talk
@@ -68,6 +69,7 @@ Classify the incoming user message as either BASIC or AGENT.
 - rag_agent        — document Q&A, clause lookup, requirements extraction
 - utility_agent    — arithmetic calculations, list docs, memory recall
 - parallel_rag     — explicit side-by-side comparison of two or more documents
+- data_analyst     — tabular data analysis (Excel, CSV), statistics, aggregations, pandas operations
 - (empty string)   — you are unsure; let the supervisor decide
 """
 
@@ -89,7 +91,7 @@ class LLMRouterOutput(BaseModel):
     suggested_agent: str = Field(
         default="",
         description=(
-            "Best starting specialist agent: 'rag_agent' | 'utility_agent' | 'parallel_rag' | ''"
+            "Best starting specialist agent: 'rag_agent' | 'utility_agent' | 'parallel_rag' | 'data_analyst' | ''"
         ),
     )
 
