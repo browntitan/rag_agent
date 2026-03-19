@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 import uuid
 from functools import lru_cache
@@ -46,6 +47,14 @@ class ChatCompletionsRequest(BaseModel):
 class IngestDocumentsRequest(BaseModel):
     paths: List[str] = Field(default_factory=list)
     source_type: str = "upload"
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "When provided (or when X-Conversation-ID header is set), files are also "
+            "copied into the active session workspace so the data analyst sandbox can "
+            "access them at /workspace/<filename> without a separate load_dataset call."
+        ),
+    )
 
 
 class Runtime:
@@ -336,10 +345,37 @@ def ingest_documents(
         tenant_id=ctx.tenant_id,
     )
 
-    return {
+    # Copy ingested files into the active session workspace (if one exists).
+    # The workspace directory is keyed by conversation_id; it exists on disk
+    # only after a /v1/chat/completions turn has been processed for that session.
+    # This allows the data analyst to access uploaded files at /workspace/<filename>
+    # inside the Docker sandbox without needing a separate load_dataset call first.
+    ws_conversation_id = (
+        request.conversation_id
+        or x_conversation_id
+        or runtime.settings.default_conversation_id
+    )
+    ws_root = runtime.settings.workspace_dir / ws_conversation_id
+    workspace_copies: List[str] = []
+    if ws_root.is_dir():
+        for p in valid_paths:
+            try:
+                shutil.copy2(p, ws_root / p.name)
+                workspace_copies.append(p.name)
+                logger.debug("ingest_documents: copied %s into workspace %s", p.name, ws_root)
+            except Exception as cp_exc:
+                logger.warning(
+                    "ingest_documents: could not copy %s to workspace %s: %s",
+                    p.name, ws_root, cp_exc,
+                )
+
+    result: Dict[str, Any] = {
         "object": "ingest.result",
         "tenant_id": ctx.tenant_id,
         "ingested_count": len(doc_ids),
         "doc_ids": doc_ids,
         "missing_paths": missing,
     }
+    if workspace_copies:
+        result["workspace_copies"] = workspace_copies
+    return result
