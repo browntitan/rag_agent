@@ -100,7 +100,9 @@ def build_multi_agent_graph(
         chat_llm, settings, callbacks=callbacks, max_loops=max_loops, registry=registry,
     )
     rag_agent_fn = make_rag_agent_node(
-        settings, stores, chat_llm, judge_llm, callbacks=callbacks,
+        settings, stores, chat_llm, judge_llm,
+        callbacks=callbacks,
+        session_proxy=session_proxy,
     )
     utility_fn = make_utility_agent_node(
         chat_llm, settings, stores, session_proxy, callbacks=callbacks,
