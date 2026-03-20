@@ -78,13 +78,21 @@ class DockerSandboxExecutor:
         code: str,
         files: Optional[Dict[str, str]] = None,
         packages: Optional[List[str]] = None,
+        workspace_path: Optional[Path] = None,
     ) -> SandboxResult:
         """Run *code* in a fresh Docker container.
 
         Args:
-            code:     Python source code to execute. Must use ``print()`` for output.
-            files:    Mapping of ``{container_path: host_path}`` for files to copy in.
-            packages: Additional pip packages to install (on top of the defaults).
+            code:           Python source code to execute. Must use ``print()`` for output.
+            files:          Mapping of ``{container_path: host_path}`` for files to copy in.
+                            Ignored when *workspace_path* is provided (files already live there).
+            packages:       Additional pip packages to install (on top of the defaults).
+            workspace_path: When provided, bind-mount this host directory at ``/workspace``
+                            inside the container with read-write access.  Files written
+                            by the code persist on the host after the container is removed,
+                            making them available to subsequent calls within the same session.
+                            When ``None`` (default), the existing ``put_archive`` behaviour
+                            is used (backward compatible).
 
         Returns:
             :class:`SandboxResult` with stdout, stderr, exit_code, timing, and
@@ -115,6 +123,13 @@ class DockerSandboxExecutor:
 
         run_script = self._build_run_script(code, all_packages)
 
+        # Build volumes mapping for persistent workspace bind-mount
+        volumes: Optional[Dict[str, Dict[str, str]]] = None
+        if workspace_path is not None:
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            volumes = {str(workspace_path): {"bind": self.work_dir, "mode": "rw"}}
+            logger.debug("Sandbox: bind-mounting workspace %s → %s", workspace_path, self.work_dir)
+
         container = None
         start_time = time.monotonic()
         try:
@@ -126,12 +141,12 @@ class DockerSandboxExecutor:
                 working_dir=self.work_dir,
                 detach=True,
                 auto_remove=False,
+                volumes=volumes,
             )
 
-            # Ensure /workspace exists inside the container before copying files
-            # (it usually exists in python:* images but we create it defensively)
-            # Copy host files into the container before start
-            if files:
+            # Copy host files into the container before start.
+            # Skipped when workspace_path is set — files already live in the bind mount.
+            if files and workspace_path is None:
                 self._copy_files_to_container(container, files)
 
             container.start()

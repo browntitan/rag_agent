@@ -136,6 +136,10 @@ class Settings:
     data_analyst_max_steps: int         # env: DATA_ANALYST_MAX_STEPS (default: 10)
     data_analyst_skills_path: Path      # constructed: skills_dir / "data_analyst_agent.md"
 
+    # --- Session Workspace ---
+    workspace_dir: Path                 # env: WORKSPACE_DIR (default: data/workspaces)
+    workspace_session_ttl_hours: int    # env: WORKSPACE_SESSION_TTL_HOURS (default: 24; 0=keep forever)
+
 
 def _getenv(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
@@ -320,6 +324,10 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     data_analyst_max_steps = _as_int("DATA_ANALYST_MAX_STEPS", 10)
     data_analyst_skills_path = Path(_getenv("DATA_ANALYST_SKILLS_PATH", str(skills_dir / "data_analyst_agent.md")))
 
+    # Session Workspace
+    workspace_dir = Path(_getenv("WORKSPACE_DIR", str(data_dir / "workspaces")))
+    workspace_session_ttl_hours = _as_int("WORKSPACE_SESSION_TTL_HOURS", 24)
+
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
         raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
@@ -333,7 +341,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         raise ValueError(f"Unsupported PROMPTS_BACKEND={prompts_backend!r}. Supported: local, s3, azure_blob")
 
     # Ensure base local directories exist.
-    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir]:
+    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir, workspace_dir]:
         p.mkdir(parents=True, exist_ok=True)
 
     return Settings(
@@ -425,4 +433,6 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         sandbox_memory_limit=sandbox_memory_limit,
         data_analyst_max_steps=data_analyst_max_steps,
         data_analyst_skills_path=data_analyst_skills_path,
+        workspace_dir=workspace_dir,
+        workspace_session_ttl_hours=workspace_session_ttl_hours,
     )

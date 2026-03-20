@@ -1,6 +1,6 @@
 """Data analyst tools — load datasets, inspect columns, execute code in Docker sandbox.
 
-Factory function ``make_data_analyst_tools`` returns the 7 tools available
+Factory function ``make_data_analyst_tools`` returns up to 11 tools available
 to the data analyst agent:
 
 1. load_dataset       — load Excel/CSV from KB, return schema + preview
@@ -10,6 +10,10 @@ to the data analyst agent:
 5. scratchpad_write   — within-turn memory
 6. scratchpad_read    — within-turn memory
 7. scratchpad_list    — within-turn memory
+8. workspace_write    — write a text file to the persistent session workspace
+9. workspace_read     — read a file from the persistent session workspace
+10. workspace_list    — list all files in the persistent session workspace
+11. search_skills     — search the skills library for operational guidance
 """
 from __future__ import annotations
 
@@ -36,15 +40,16 @@ def make_data_analyst_tools(
     *,
     settings: Settings,
 ) -> List[Any]:
-    """Build and return the 7 tools for the data analyst agent.
+    """Build and return up to 11 tools for the data analyst agent.
 
     Args:
         stores:   KnowledgeStores providing access to doc_store and chunk_store.
-        session:  A ChatSession or SessionProxy with a ``scratchpad`` dict.
+        session:  A ChatSession or SessionProxy with a ``scratchpad`` dict and
+                  an optional ``workspace`` (SessionWorkspace) for persistent storage.
         settings: Application settings (sandbox config, etc.).
 
     Returns:
-        List of 7 LangChain tool callables.
+        List of LangChain tool callables (7 core + 3 workspace + search_skills).
     """
 
     # ------------------------------------------------------------------
@@ -109,6 +114,16 @@ def make_data_analyst_tools(
             # Store path in scratchpad for other tools to reference
             session.scratchpad[f"dataset_{doc_id}"] = str(path)
             session.scratchpad[f"dataset_{doc_id}_ext"] = ext
+
+            # Copy into the persistent session workspace so the Docker sandbox
+            # can access it via the bind-mounted /workspace directory.
+            workspace = getattr(session, "workspace", None)
+            if workspace is not None:
+                try:
+                    workspace.copy_file(path)
+                    logger.debug("load_dataset: copied %s into session workspace", path.name)
+                except Exception as ws_exc:
+                    logger.warning("load_dataset: could not copy %s to workspace: %s", path.name, ws_exc)
 
             # Convert head to records safely (handle non-serializable types)
             head_records = []
@@ -253,26 +268,48 @@ def make_data_analyst_tools(
             cut at 50 KB). On Docker unavailability, returns an error key.
         """
         try:
-            # Build files mapping: {container_path: host_path}
-            files: dict = {}
-            for raw_id in (doc_ids or "").split(","):
-                did = raw_id.strip()
-                if not did:
-                    continue
-                path_str = session.scratchpad.get(f"dataset_{did}")
-                if path_str:
-                    host_path = Path(path_str)
-                    container_path = f"/workspace/{host_path.name}"
-                    files[container_path] = str(host_path)
-                else:
-                    logger.warning("execute_code: dataset_%s not in scratchpad; did you call load_dataset?", did)
-
             executor = DockerSandboxExecutor(
                 image=settings.sandbox_docker_image,
                 timeout_seconds=settings.sandbox_timeout_seconds,
                 memory_limit=settings.sandbox_memory_limit,
             )
-            result = executor.execute(code=code, files=files or None)
+
+            workspace = getattr(session, "workspace", None)
+            if workspace is not None:
+                # Persistent workspace bind-mount: files already live in the directory.
+                # Ensure any doc_ids that weren't copied earlier are copied now.
+                for raw_id in (doc_ids or "").split(","):
+                    did = raw_id.strip()
+                    if not did:
+                        continue
+                    path_str = session.scratchpad.get(f"dataset_{did}")
+                    if path_str:
+                        src = Path(path_str)
+                        if not workspace.exists(src.name):
+                            try:
+                                workspace.copy_file(src)
+                            except Exception as cp_exc:
+                                logger.warning("execute_code: could not copy %s to workspace: %s", src.name, cp_exc)
+                    else:
+                        logger.warning("execute_code: dataset_%s not in scratchpad; did you call load_dataset?", did)
+
+                result = executor.execute(code=code, workspace_path=workspace.root)
+            else:
+                # Legacy path: copy files into the container via put_archive.
+                files: dict = {}
+                for raw_id in (doc_ids or "").split(","):
+                    did = raw_id.strip()
+                    if not did:
+                        continue
+                    path_str = session.scratchpad.get(f"dataset_{did}")
+                    if path_str:
+                        host_path = Path(path_str)
+                        container_path = f"/workspace/{host_path.name}"
+                        files[container_path] = str(host_path)
+                    else:
+                        logger.warning("execute_code: dataset_%s not in scratchpad; did you call load_dataset?", did)
+
+                result = executor.execute(code=code, files=files or None)
 
             return json.dumps({
                 "stdout": result.stdout,
@@ -348,7 +385,95 @@ def make_data_analyst_tools(
         user_keys = [k for k in session.scratchpad.keys() if not k.startswith("dataset_")]
         return json.dumps({"keys": user_keys, "count": len(user_keys)})
 
-    return [
+    # ------------------------------------------------------------------
+    # Tools 8-10: workspace (persistent cross-turn file storage)
+    # These tools are only functional when session.workspace is set.
+    # They degrade gracefully (return an informative message) when no
+    # workspace is available so the same tool list works in all contexts.
+    # ------------------------------------------------------------------
+
+    @tool
+    def workspace_write(filename: str, content: str) -> str:
+        """Write a text file to the persistent session workspace.
+
+        Files written here survive across turns and are visible to the
+        Docker sandbox at /workspace/<filename>. Use this to save analysis
+        results, summaries, or notes that you (or other agents) can read
+        back later in the same session.
+
+        Args:
+            filename: Name of the file to write (e.g. "results.csv",
+                      "notes.txt"). Must not contain path separators.
+            content:  Text content to write.
+
+        Returns:
+            JSON with the filename and byte size on success, or an error key.
+        """
+        workspace = getattr(session, "workspace", None)
+        if workspace is None:
+            return json.dumps({"error": "No session workspace is available."})
+        try:
+            dest = workspace.write_text(filename, content)
+            return json.dumps({"written": dest.name, "size_bytes": dest.stat().st_size})
+        except Exception as exc:
+            logger.warning("workspace_write failed for %s: %s", filename, exc)
+            return json.dumps({"error": str(exc)})
+
+    @tool
+    def workspace_read(filename: str) -> str:
+        """Read a file from the persistent session workspace.
+
+        Use this to retrieve files written by workspace_write or produced
+        by execute_code in a previous turn.
+
+        Args:
+            filename: Name of the file to read. Use workspace_list() to see
+                      available files.
+
+        Returns:
+            The file contents as a string, or JSON with an error key.
+        """
+        workspace = getattr(session, "workspace", None)
+        if workspace is None:
+            return json.dumps({"error": "No session workspace is available."})
+        try:
+            return workspace.read_text(filename)
+        except FileNotFoundError:
+            available = workspace.list_files()
+            return json.dumps({
+                "error": f"File '{filename}' not found.",
+                "available_files": available,
+            })
+        except Exception as exc:
+            logger.warning("workspace_read failed for %s: %s", filename, exc)
+            return json.dumps({"error": str(exc)})
+
+    @tool
+    def workspace_list() -> str:
+        """List all files currently in the persistent session workspace.
+
+        Returns:
+            JSON with a list of filenames and the total file count.
+        """
+        workspace = getattr(session, "workspace", None)
+        if workspace is None:
+            return json.dumps({"error": "No session workspace is available."})
+        try:
+            files = workspace.list_files()
+            return json.dumps({"files": files, "count": len(files)})
+        except Exception as exc:
+            logger.warning("workspace_list failed: %s", exc)
+            return json.dumps({"error": str(exc)})
+
+    # skills search — lets the agent look up operational guidance at runtime
+    skills_search = None
+    try:
+        from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
+        skills_search = make_skills_search_tool(settings)
+    except Exception as e:
+        logger.warning("Could not build search_skills tool: %s", e)
+
+    tools = [
         load_dataset,
         inspect_columns,
         execute_code,
@@ -356,7 +481,13 @@ def make_data_analyst_tools(
         scratchpad_write,
         scratchpad_read,
         scratchpad_list,
+        workspace_write,
+        workspace_read,
+        workspace_list,
     ]
+    if skills_search is not None:
+        tools.append(skills_search)
+    return tools
 
 
 def _safe_float(value: Any) -> Optional[float]:

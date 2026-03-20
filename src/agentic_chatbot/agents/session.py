@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agentic_chatbot.context import RequestContext
+
+if TYPE_CHECKING:
+    from agentic_chatbot.sandbox.session_workspace import SessionWorkspace
 
 
 @dataclass
@@ -19,6 +22,9 @@ class ChatSession:
     uploaded_doc_ids: List[str] = field(default_factory=list)
     scratchpad: Dict[str, str] = field(default_factory=dict)
     demo_mode: bool = False
+    # Persistent workspace shared across all agent turns in this session.
+    # Set by the orchestrator / CLI layer after session creation.
+    workspace: Optional["SessionWorkspace"] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.session_id:

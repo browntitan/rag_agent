@@ -72,13 +72,17 @@ def build_multi_agent_graph(
     from agentic_chatbot.graph.nodes.parallel_planner_node import parallel_planner_node
     from agentic_chatbot.graph.nodes.data_analyst_node import make_data_analyst_node
 
-    # Build a session proxy for tool factories
+    # Build a session proxy for tool factories.
+    # workspace is a reference copy — both ChatSession and SessionProxy point
+    # to the same SessionWorkspace object (same host directory), so files
+    # written by workspace tools are immediately visible to all consumers.
     session_proxy = SessionProxy(
         session_id=session.session_id,
         tenant_id=session.tenant_id,
         demo_mode=bool(getattr(session, "demo_mode", False)),
         scratchpad=dict(session.scratchpad),
         uploaded_doc_ids=list(session.uploaded_doc_ids),
+        workspace=getattr(session, "workspace", None),
     )
 
     # How many supervisor loops before forcing __end__
@@ -96,7 +100,9 @@ def build_multi_agent_graph(
         chat_llm, settings, callbacks=callbacks, max_loops=max_loops, registry=registry,
     )
     rag_agent_fn = make_rag_agent_node(
-        settings, stores, chat_llm, judge_llm, callbacks=callbacks,
+        settings, stores, chat_llm, judge_llm,
+        callbacks=callbacks,
+        session_proxy=session_proxy,
     )
     utility_fn = make_utility_agent_node(
         chat_llm, settings, stores, session_proxy, callbacks=callbacks,

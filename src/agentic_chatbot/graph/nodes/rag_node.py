@@ -75,8 +75,21 @@ def make_rag_agent_node(
     chat_llm: Any,
     judge_llm: Any,
     callbacks: Optional[List[Any]] = None,
+    session_proxy: Optional["SessionProxy"] = None,
 ) -> Callable[[AgentState], Dict[str, Any]]:
-    """Create the RAG agent node function."""
+    """Create the RAG agent node function.
+
+    Parameters
+    ----------
+    session_proxy : SessionProxy, optional
+        When provided, its ``workspace`` reference is captured and injected into
+        the per-call local proxy.  The RAG agent's current tools do not use the
+        workspace, but passing it here ensures future workspace-aware tools work
+        without additional wiring changes.
+    """
+    # Capture workspace at build time; the object is shared (reference copy)
+    # so files written by other agents are immediately visible.
+    _workspace = getattr(session_proxy, "workspace", None)
 
     def rag_agent_node(state: AgentState) -> Dict[str, Any]:
         from agentic_chatbot.rag.agent import run_rag_agent  # noqa: PLC0415
@@ -87,11 +100,14 @@ def make_rag_agent_node(
                 "messages": [AIMessage(content="No query found to search for.")],
             }
 
+        # Build a fresh proxy from state (captures latest scratchpad) and
+        # inject the captured workspace reference.
         session_proxy = SessionProxy(
             session_id=state.get("session_id", ""),
             tenant_id=state.get("tenant_id", "local-dev"),
             scratchpad=dict(state.get("scratchpad", {})),
             uploaded_doc_ids=list(state.get("uploaded_doc_ids", [])),
+            workspace=_workspace,
         )
 
         context = _format_conversation_context(state.get("messages", []))

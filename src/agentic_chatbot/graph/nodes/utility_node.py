@@ -144,7 +144,18 @@ def make_utility_agent_node(
 
     list_docs_tool = make_list_docs_tool(settings, stores, session_proxy)
     memory_tools = make_memory_tools(stores, session_proxy)
+
+    # skills search — lets the utility agent look up operational guidance at runtime
+    skills_search = None
+    try:
+        from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
+        skills_search = make_skills_search_tool(settings)
+    except Exception as e:
+        logger.warning("Could not build search_skills tool: %s", e)
+
     utility_tools = [calculator, list_docs_tool] + memory_tools
+    if skills_search is not None:
+        utility_tools.append(skills_search)
 
     system_prompt = load_utility_agent_skills(settings)
 

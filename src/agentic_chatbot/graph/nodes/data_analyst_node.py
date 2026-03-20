@@ -3,14 +3,18 @@
 Wraps the data analyst ReAct agent (create_react_agent) into a LangGraph node
 function following the same pattern as utility_node.py.
 
-Tools available to this agent:
-- load_dataset       — load Excel/CSV from KB and inspect schema
+Tools available to this agent (11 total):
+- load_dataset       — load Excel/CSV from KB and inspect schema; copies file into workspace
 - inspect_columns    — detailed per-column statistics
-- execute_code       — run Python in Docker sandbox
+- execute_code       — run Python in Docker sandbox (files at /workspace/<filename>)
 - calculator         — quick safe arithmetic
-- scratchpad_write   — within-turn memory
+- scratchpad_write   — within-turn memory (cleared between turns)
 - scratchpad_read    — within-turn memory
 - scratchpad_list    — within-turn memory
+- workspace_write    — write a text file to the persistent session workspace
+- workspace_read     — read a file from the persistent session workspace
+- workspace_list     — list all files in the persistent session workspace
+- search_skills      — look up operational guidance from the skills library
 """
 from __future__ import annotations
 
