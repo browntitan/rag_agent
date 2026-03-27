@@ -18,7 +18,7 @@ from agentic_chatbot.graph.state import AgentState
 logger = logging.getLogger(__name__)
 
 # Fallback valid agents used when no registry is provided
-_VALID_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst", "__end__"}
+_VALID_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst", "clarify", "__end__"}
 
 
 def _build_supervisor_prompt(settings: Settings, registry: Any = None) -> str:
@@ -182,6 +182,12 @@ def make_supervisor_node(
         updates: Dict[str, Any] = {
             "next_agent": parsed["next_agent"],
         }
+
+        # If routing to clarify, propagate the clarification question
+        if parsed["next_agent"] == "clarify":
+            question = parsed.get("clarification_question", "").strip()
+            updates["needs_clarification"] = True
+            updates["clarification_question"] = question
 
         # If routing to __end__, set the final answer
         if parsed["next_agent"] == "__end__":

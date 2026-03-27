@@ -1,0 +1,48 @@
+.file-upload {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-upload__input {
+  display: none;
+}
+
+.file-upload__btn {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.file-upload__btn:hover {
+  background: #f3f4f6;
+}
+
+.file-upload__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.file-upload__badge {
+  background: #2563eb;
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.file-upload__status {
+  font-size: 12px;
+  color: #666;
+}
+
+.file-upload__error {
+  font-size: 12px;
+  color: #ef4444;
+}

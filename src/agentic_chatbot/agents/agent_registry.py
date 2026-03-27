@@ -102,7 +102,7 @@ class AgentRegistry:
     # ------------------------------------------------------------------
 
     def _register_builtin_agents(self) -> None:
-        """Register all four built-in agents. Called once in ``__init__``."""
+        """Register all built-in agents. Called once in ``__init__``."""
 
         self.register(AgentSpec(
             name="rag_agent",
@@ -175,6 +175,27 @@ class AgentRegistry:
             ],
             skills_key="data_analyst_agent",
             enabled=docker_ok,
+        ))
+
+        # Clarification agent — always enabled; never shown in normal agent list
+        # but must appear in valid_agent_names() so supervisor JSON is accepted.
+        self.register(AgentSpec(
+            name="clarify",
+            display_name="Clarification Node",
+            description=(
+                "Asks the user a follow-up question when the request is too vague "
+                "or ambiguous to route safely without more information. "
+                "Use this instead of guessing when critical context (e.g. which "
+                "document, which metric, which time period) is missing."
+            ),
+            use_when=[
+                "The user's request refers to 'the document' or 'the file' but no document has been uploaded",
+                "The request is a single ambiguous word or phrase with no context (e.g. 'summarise', 'compare')",
+                "Multiple conflicting interpretations are equally plausible and the wrong choice would produce a useless answer",
+                "A required parameter (e.g. clause number, date range, document name) is clearly absent",
+            ],
+            skills_key="supervisor_agent",
+            enabled=True,
         ))
 
     def _check_docker_available(self) -> bool:

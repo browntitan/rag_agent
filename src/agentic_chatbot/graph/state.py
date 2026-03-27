@@ -68,3 +68,11 @@ class AgentState(MessagesState):
 
     # Final output text
     final_answer: str = ""
+
+    # Clarification loop — set by supervisor when the request is too vague
+    # to dispatch safely. The clarification_node emits the question as an
+    # AIMessage and routes to __end__, ending the turn without calling any
+    # specialist. On the next turn the user's answer is in the history and
+    # the supervisor can route normally.
+    needs_clarification: bool = False
+    clarification_question: str = ""

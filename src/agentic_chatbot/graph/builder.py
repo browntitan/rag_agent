@@ -71,6 +71,7 @@ def build_multi_agent_graph(
     from agentic_chatbot.graph.nodes.rag_synthesizer_node import make_rag_synthesizer_node
     from agentic_chatbot.graph.nodes.parallel_planner_node import parallel_planner_node
     from agentic_chatbot.graph.nodes.data_analyst_node import make_data_analyst_node
+    from agentic_chatbot.graph.nodes.clarification_node import make_clarification_node
 
     # Build a session proxy for tool factories.
     # workspace is a reference copy — both ChatSession and SessionProxy point
@@ -120,6 +121,8 @@ def build_multi_agent_graph(
             chat_llm, settings, stores, session_proxy, callbacks=callbacks,
         )
 
+    clarification_fn = make_clarification_node()
+
     # ── Build the graph ────────────────────────────────────────────────
 
     graph = StateGraph(AgentState)
@@ -135,6 +138,8 @@ def build_multi_agent_graph(
     if data_analyst_fn is not None:
         graph.add_node("data_analyst", data_analyst_fn)
 
+    graph.add_node("clarify", clarification_fn)
+
     # ── Edges ──────────────────────────────────────────────────────────
 
     # Entry: always start with supervisor
@@ -149,6 +154,8 @@ def build_multi_agent_graph(
             return "utility_agent"
         elif next_agent == "parallel_rag":
             return "parallel_planner"
+        elif next_agent == "clarify":
+            return "clarify"
         elif next_agent == "data_analyst" and data_analyst_fn is not None:
             return "data_analyst"
         elif next_agent == "data_analyst" and data_analyst_fn is None:
@@ -162,6 +169,7 @@ def build_multi_agent_graph(
         "rag_agent": "rag_agent",
         "utility_agent": "utility_agent",
         "parallel_planner": "parallel_planner",
+        "clarify": "clarify",
         END: END,
     }
     if data_analyst_fn is not None:
@@ -211,13 +219,16 @@ def build_multi_agent_graph(
     # Synthesizer → supervisor (loop back for potential follow-up)
     graph.add_edge("rag_synthesizer", "supervisor")
 
+    # Clarify → END (question emitted; graph exits this turn cleanly)
+    graph.add_edge("clarify", END)
+
     # ── Compile ────────────────────────────────────────────────────────
 
     compiled = graph.compile()
-    node_count = 7 if data_analyst_fn is not None else 6
+    node_count = (8 if data_analyst_fn is not None else 7)
     analyst_note = " + data_analyst" if data_analyst_fn is not None else ""
     logger.info(
-        "Multi-agent graph compiled: %d nodes, supervisor + rag_agent + utility + parallel_rag%s",
+        "Multi-agent graph compiled: %d nodes, supervisor + rag_agent + utility + parallel_rag + clarify%s",
         node_count,
         analyst_note,
     )
@@ -260,4 +271,6 @@ def build_initial_state(
         "rag_sub_tasks": [],
         "rag_results": [],
         "final_answer": "",
+        "needs_clarification": False,
+        "clarification_question": "",
     }

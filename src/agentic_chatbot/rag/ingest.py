@@ -35,10 +35,70 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _load_documents_docling(path: Path, settings: Settings) -> List[Document]:
+    """Load a file using the Docling extraction engine.
+
+    Docling handles PDF, DOCX, PPTX, XLSX, and images natively, producing
+    layout-aware Markdown with preserved table structure.  Falls back to an
+    empty list (triggering legacy loader) if Docling is not installed or if
+    it fails to parse the file.
+
+    Args:
+        path:     Absolute path to the file to load.
+        settings: Application settings; ``docling_ocr_enabled`` controls
+                  whether Docling's internal OCR pipeline is active.
+
+    Returns:
+        A list of LangChain ``Document`` objects, one per Docling page/section,
+        or an empty list on failure.
+    """
+    try:
+        from docling.document_converter import DocumentConverter, PdfFormatOption  # noqa: PLC0415
+        from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
+        from docling.datamodel.pipeline_options import PdfPipelineOptions  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "Docling is not installed. Falling back to legacy loader for %s. "
+            "Install with: pip install docling",
+            path.name,
+        )
+        return []
+
+    try:
+        pdf_options = PdfPipelineOptions(do_ocr=settings.docling_ocr_enabled)
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
+        )
+        result = converter.convert(str(path))
+        if result is None or not hasattr(result, "document"):
+            logger.warning("Docling returned no document for %s", path.name)
+            return []
+
+        # Export to Markdown — preserves table structure as GFM tables
+        markdown_text = result.document.export_to_markdown()
+        if not markdown_text.strip():
+            return []
+
+        return [Document(
+            page_content=markdown_text,
+            metadata={
+                "source": str(path),
+                "extraction_engine": "docling",
+            },
+        )]
+    except Exception as exc:
+        logger.warning("Docling failed to convert %s: %s. Falling back to legacy loader.", path.name, exc)
+        return []
+
+
 def _load_documents(path: Path, settings: Settings) -> List[Document]:
     """Load a file into LangChain Documents.
 
-    Dispatch:
+    When ``settings.extraction_engine == 'docling'``, Docling is tried first
+    for supported formats (pdf, docx, pptx, xlsx).  If Docling is unavailable
+    or fails, the call transparently falls through to the legacy pipeline.
+
+    Legacy dispatch:
       .md / .txt       → TextLoader (unchanged)
       .pdf             → hybrid PyPDF + PaddleOCR when ocr_enabled, else PyPDFLoader
       .docx            → Docx2txtLoader (unchanged)
@@ -46,6 +106,14 @@ def _load_documents(path: Path, settings: Settings) -> List[Document]:
       other            → TextLoader with autodetect_encoding (fallback)
     """
     suffix = path.suffix.lower()
+
+    # ── Docling fast-path ────────────────────────────────────────────────
+    _DOCLING_SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls"}
+    if getattr(settings, "extraction_engine", "legacy") == "docling" and suffix in _DOCLING_SUPPORTED:
+        docs = _load_documents_docling(path, settings)
+        if docs:
+            return docs
+        # Fall through to legacy pipeline on empty/failure
 
     if suffix in {".md", ".txt"}:
         from langchain_community.document_loaders import TextLoader

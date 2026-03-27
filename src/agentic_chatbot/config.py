@@ -107,6 +107,14 @@ class Settings:
     ocr_min_page_chars: int  # env: OCR_MIN_PAGE_CHARS (default: 50)
                              # PDF pages with fewer extracted chars trigger OCR fallback
 
+    # --- Extraction engine (Docling, optional) ---
+    # When extraction_engine='docling', Docling is used as the primary loader for
+    # PDF, DOCX, PPTX, and XLSX files — producing layout-aware, clean Markdown output.
+    # Falls back to the legacy loaders (PyPDF / Docx2txt) if Docling is not installed.
+    # Set extraction_engine='legacy' to keep the existing PaddleOCR-based pipeline.
+    extraction_engine: str   # env: EXTRACTION_ENGINE (default: "legacy"; "docling" to enable)
+    docling_ocr_enabled: bool  # env: DOCLING_OCR_ENABLED (default: True); enable Docling OCR pipeline
+
     # --- Langfuse (optional) ---
     langfuse_host: str | None
     langfuse_public_key: str | None
@@ -295,6 +303,10 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     ocr_use_gpu        = _as_bool("OCR_USE_GPU", False)
     ocr_min_page_chars = _as_int("OCR_MIN_PAGE_CHARS", 50)
 
+    # Extraction engine
+    extraction_engine  = str(_getenv("EXTRACTION_ENGINE", "legacy")).lower()
+    docling_ocr_enabled = _as_bool("DOCLING_OCR_ENABLED", True)
+
     # Langfuse
     langfuse_host = _getenv("LANGFUSE_HOST", "http://localhost:3000")
     langfuse_public_key = _getenv("LANGFUSE_PUBLIC_KEY")
@@ -416,6 +428,8 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         ocr_language=ocr_language,
         ocr_use_gpu=ocr_use_gpu,
         ocr_min_page_chars=ocr_min_page_chars,
+        extraction_engine=extraction_engine,
+        docling_ocr_enabled=docling_ocr_enabled,
         langfuse_host=langfuse_host,
         langfuse_public_key=langfuse_public_key,
         langfuse_secret_key=langfuse_secret_key,

@@ -52,7 +52,7 @@ def make_all_rag_tools(
     *,
     settings: Settings | None = None,
 ) -> List[Any]:
-    """Return all 12 RAG specialist tools bound to stores and session.
+    """Return all 14 RAG specialist tools bound to stores and session.
 
     Args:
         stores:   KnowledgeStores with chunk_store, doc_store, memory_store.
@@ -202,7 +202,90 @@ def make_all_rag_tools(
         return json.dumps([_chunk_to_dict(r) for r in unique[:max_out]])
 
     # ------------------------------------------------------------------ #
-    #  4. extract_clauses                                                  #
+    #  4. full_text_search_document                                        #
+    # ------------------------------------------------------------------ #
+    @tool
+    def full_text_search_document(doc_id: str, query: str, max_results: int = 20) -> str:
+        """Deep full-text keyword search within ONE document, returning FULL chunk content.
+
+        Unlike search_document (which returns 500-char snippets), this returns the
+        complete text of each matching chunk along with page numbers, section titles,
+        and clause numbers. Use this when you need to read the full text of passages
+        matching a keyword, not just previews.
+
+        Args:
+            doc_id:      Exact doc_id (use resolve_document first if needed).
+            query:       Keywords to search for within the document.
+            max_results: Maximum number of chunks to return (default 20, max 50).
+
+        Returns JSON list of chunks with full content, page_number, clause_number, section_title.
+        """
+        capped = min(max(1, max_results), 50)
+        chunks = stores.chunk_store.full_text_search_document(
+            query, doc_id, top_k=capped, tenant_id=tenant_id,
+        )
+        results = []
+        for ch in chunks:
+            results.append({
+                "chunk_id":      ch.chunk_id,
+                "doc_id":        ch.doc_id,
+                "chunk_index":   ch.chunk_index,
+                "chunk_type":    ch.chunk_type,
+                "clause_number": ch.clause_number,
+                "section_title": ch.section_title,
+                "page_number":   ch.page_number,
+                "content":       ch.content,
+            })
+        return json.dumps(results)
+
+    # ------------------------------------------------------------------ #
+    #  5. search_by_metadata                                               #
+    # ------------------------------------------------------------------ #
+    @tool
+    def search_by_metadata(
+        source_type: str = "",
+        file_type: str = "",
+        title_contains: str = "",
+    ) -> str:
+        """Search for documents by metadata fields (source_type, file_type, title substring).
+
+        Use this to discover what documents are available before searching their content.
+        Filters are combined with AND logic — only documents matching ALL non-empty
+        filters are returned.
+
+        Args:
+            source_type:    Filter by source type, e.g. 'kb' or 'upload'. Empty = any.
+            file_type:      Filter by file type, e.g. 'pdf', 'docx'. Empty = any.
+            title_contains: Case-insensitive substring match on document title. Empty = any.
+
+        Returns JSON list of matching documents with doc_id, title, source_type, file_type.
+        """
+        all_docs = stores.doc_store.list_documents(
+            source_type=source_type, tenant_id=tenant_id,
+        )
+        # Apply additional filters in Python
+        filtered = all_docs
+        if file_type:
+            ft_lower = file_type.lower()
+            filtered = [d for d in filtered if getattr(d, "file_type", "").lower() == ft_lower]
+        if title_contains:
+            tc_lower = title_contains.lower()
+            filtered = [d for d in filtered if tc_lower in getattr(d, "title", "").lower()]
+
+        results = []
+        for d in filtered:
+            results.append({
+                "doc_id":      d.doc_id,
+                "title":       d.title,
+                "source_type": d.source_type,
+                "file_type":   getattr(d, "file_type", ""),
+                "num_chunks":  getattr(d, "num_chunks", 0),
+                "ingested_at": getattr(d, "ingested_at", ""),
+            })
+        return json.dumps(results)
+
+    # ------------------------------------------------------------------ #
+    #  6. extract_clauses                                                  #
     # ------------------------------------------------------------------ #
     @tool
     def extract_clauses(doc_id: str, clause_numbers: str) -> str:
@@ -386,6 +469,8 @@ def make_all_rag_tools(
         resolve_document,
         search_document,
         search_all_documents,
+        full_text_search_document,
+        search_by_metadata,
         extract_clauses,
         list_document_structure,
         extract_requirements,
