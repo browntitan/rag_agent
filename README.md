@@ -977,13 +977,16 @@ The AGENT path uses a **LangGraph supervisor graph** that routes to specialist a
 START → supervisor ──→ rag_agent ──→ supervisor (loop)
                   ├──→ utility_agent ──→ supervisor (loop)
                   ├──→ data_analyst ──→ supervisor (loop)
+                  ├──→ clarify ──→ END   (question emitted; user answers next turn)
                   ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
                   └──→ END
 ```
 
 **Supervisor** (`graph/supervisor.py`): An LLM node that reads conversation history and returns a JSON routing decision. Valid targets are loaded dynamically from `AgentRegistry` — adding a new agent automatically updates the supervisor's prompt and valid-response set. The supervisor loops: after each agent finishes, it decides whether to route to another agent or stop.
 
-**RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. All 11 RAG tools are unchanged.
+**Clarification Node** (`graph/nodes/clarification_node.py`): When the supervisor determines that the request is too vague or ambiguous to route safely (e.g. "summarise the document" with no document in context), it sets `next_agent="clarify"` and includes a `clarification_question`. The clarification node emits the question as an `AIMessage` and routes directly to END — ending the turn without calling any specialist. On the next user turn, the answer is in conversation history and the supervisor can route normally. No LangGraph checkpointer required; works with the existing stateless API design.
+
+**RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. All 14 RAG tools are available.
 
 **Utility Agent** (`graph/nodes/utility_node.py`): A `create_react_agent` subgraph with `calculator`, `list_indexed_docs`, and `memory_*` tools.
 
@@ -1040,21 +1043,24 @@ The GeneralAgent is powered by **LangGraph `create_react_agent`** and is used as
 
 ### 12.3 RAGAgent
 
-The RAGAgent is powered by **LangGraph `create_react_agent`** and is primarily invoked as a specialist node in the multi-agent graph (`rag_agent`, `rag_worker`). It is also invoked through `rag_agent_tool` in the legacy fallback path. It operates as an autonomous specialist loop with 11 dedicated tools:
+The RAGAgent is powered by **LangGraph `create_react_agent`** and is primarily invoked as a specialist node in the multi-agent graph (`rag_agent`, `rag_worker`). It is also invoked through `rag_agent_tool` in the legacy fallback path. It operates as an autonomous specialist loop with **14 dedicated tools**:
 
-| Tool | Purpose |
-|---|---|
-| `resolve_document(name_or_hint)` | Fuzzy-match a document name to a `doc_id` using rapidfuzz + pg_trgm |
-| `search_document(doc_id, query, strategy)` | Vector/keyword/hybrid search scoped to one document |
-| `search_all_documents(query, strategy)` | Cross-document search (no doc filter) |
-| `extract_clauses(doc_id, clause_numbers)` | Retrieve exact clause text by number ("3", "3.2", "10.1") |
-| `list_document_structure(doc_id)` | Show the clause/section outline of a document |
-| `extract_requirements(doc_id, filter)` | SQL `WHERE chunk_type='requirement'` with optional semantic re-rank |
-| `compare_clauses(doc_id_1, doc_id_2, clause_numbers)` | Side-by-side clause text from two documents |
-| `diff_documents(doc_id_1, doc_id_2)` | Structural outline diff (shared vs. unique clauses) |
-| `scratchpad_write(key, value)` | Store intermediate findings in `session.scratchpad` |
-| `scratchpad_read(key)` | Retrieve stored findings |
-| `scratchpad_list()` | List all scratchpad keys |
+| # | Tool | Purpose |
+|---|---|---|
+| 1 | `resolve_document(name_or_hint)` | Fuzzy-match a document name to a `doc_id` using rapidfuzz + pg_trgm |
+| 2 | `search_document(doc_id, query, strategy)` | Vector/keyword/hybrid search scoped to one document (returns 500-char snippets + scores) |
+| 3 | `search_all_documents(query, strategy)` | Cross-document search (no doc filter) |
+| 4 | `full_text_search_document(doc_id, query, max_results)` | Deep PostgreSQL full-text search returning **complete** chunk content — use when verbatim text is needed |
+| 5 | `search_by_metadata(source_type, file_type, title_contains)` | Filter documents by metadata; useful for discovering what is indexed |
+| 6 | `extract_clauses(doc_id, clause_numbers)` | Retrieve exact clause text by number ("3", "3.2", "10.1") |
+| 7 | `list_document_structure(doc_id)` | Show the clause/section outline of a document |
+| 8 | `extract_requirements(doc_id, filter)` | SQL `WHERE chunk_type='requirement'` with optional semantic re-rank |
+| 9 | `compare_clauses(doc_id_1, doc_id_2, clause_numbers)` | Side-by-side clause text from two documents |
+| 10 | `diff_documents(doc_id_1, doc_id_2)` | Structural outline diff (shared vs. unique clauses) |
+| 11 | `scratchpad_write(key, value)` | Store intermediate findings in `session.scratchpad` |
+| 12 | `scratchpad_read(key)` | Retrieve stored findings |
+| 13 | `scratchpad_list()` | List all scratchpad keys |
+| 14 | `search_skills(query)` | Search the skills library for operational guidance at runtime |
 
 **How it works:**
 1. System prompt loaded from `data/skills/rag_agent.md` is prepended as a `SystemMessage`
@@ -1094,10 +1100,14 @@ File path
     ├─ Check doc_store.document_exists() → skip if unchanged
     │
     ├─ _load_documents(path, settings)
-    │     ├── .txt/.md  → TextLoader
-    │     ├── .pdf      → PyPDF per page; OCR for pages < 50 chars via PyMuPDF + PaddleOCR
-    │     ├── .docx     → Docx2txtLoader
-    │     └── image     → PaddleOCR → single Document
+    │     ├── EXTRACTION_ENGINE=docling (opt-in):
+    │     │     ├── .pdf/.docx/.pptx/.xlsx → Docling → layout-aware Markdown (IBM, MIT)
+    │     │     └── fallback to legacy loaders if Docling not installed or conversion fails
+    │     └── EXTRACTION_ENGINE=legacy (default):
+    │           ├── .txt/.md  → TextLoader
+    │           ├── .pdf      → PyPDF per page; OCR for pages < 50 chars via PyMuPDF + PaddleOCR
+    │           ├── .docx     → Docx2txtLoader
+    │           └── image     → PaddleOCR → single Document
     │
     ├─ detect_structure(full_text)
     │     → classifies as general / structured_clauses / requirements_doc / policy_doc / contract
@@ -1126,8 +1136,10 @@ The RAGAgent's search tools support three strategies:
 | Strategy | Method | Best For |
 |---|---|---|
 | `vector` | Cosine similarity via HNSW index on pgvector | Semantic / conceptual questions |
-| `keyword` | PostgreSQL `tsvector`/`tsquery` full-text search | Exact term matching, clause numbers, defined terms |
-| `hybrid` | Union of vector + keyword results, deduplicated by highest score | General queries (default) |
+| `keyword` | PostgreSQL `tsvector`/`tsquery` with `ts_rank_cd` scoring | Exact term matching, clause numbers, defined terms |
+| `hybrid` | Both methods combined; re-ranked by **Reciprocal Rank Fusion (RRF)** | General queries (default) |
+
+**Reciprocal Rank Fusion (RRF):** When `strategy='hybrid'`, results from the vector and keyword lists are fused using the standard RRF formula: `score = Σ 1/(k + rank + 1)` across all ranked lists (k=60 by default). Chunks appearing in both lists naturally receive higher fused scores — rewarding evidence that is both semantically relevant and lexically precise. Such chunks are labelled `method='hybrid_rrf'` in tool output.
 
 All search functions accept an optional `doc_id_filter` which is pushed to the SQL `WHERE` clause for efficient single-document search.
 
@@ -1197,6 +1209,35 @@ When Langfuse keys are configured, every turn emits traces including:
 - Upload ingestion events
 
 Access the Langfuse dashboard at `http://localhost:3000` (if running locally).
+
+### 12.9 React Frontend
+
+A lightweight chat frontend lives in `frontend/`. It connects to the existing OpenAI-compatible API gateway and requires no additional backend changes.
+
+**Stack:** Vite 5 + React 18 + TypeScript. No external UI library — plain CSS.
+
+**Features:**
+- Streaming chat via Server-Sent Events (`/v1/chat/completions?stream=true`)
+- File upload via multipart POST to `/v1/upload` (PDF, DOCX, TXT, CSV, XLSX, MD)
+- New chat button (generates a fresh UUID conversation ID)
+- Stop generation button (AbortController)
+- Typing indicator during streaming
+
+**Setup:**
+```bash
+cd frontend
+npm install
+npm run dev      # starts on http://localhost:3000, proxies /v1 to http://localhost:8000
+```
+
+**Architecture:**
+- `src/api/client.ts` — `streamChatCompletion()` async generator parses raw SSE; `uploadFiles()` handles multipart
+- `src/hooks/useChat.ts` — chat state: messages, isLoading, conversationId, sendMessage, stopGeneration
+- `src/hooks/useFileUpload.ts` — upload state: isUploading, uploadedFiles, lastError
+- `src/components/` — ChatWindow, MessageBubble, ChatInput, FileUpload (each with co-located CSS)
+- `vite.config.ts` — dev server proxy so the frontend talks to the backend without CORS issues
+
+The frontend speaks the exact same OpenAI-compatible protocol as any other client; swapping in a different backend is a one-line URL change in `vite.config.ts`.
 
 ---
 
@@ -1663,6 +1704,7 @@ langchain_agentic_chatbot_v2/
     │   └── nodes/
     │       ├── rag_node.py        # Single RAG agent node (wraps run_rag_agent)
     │       ├── utility_node.py    # Utility agent subgraph (calc, memory, list_docs)
+    │       ├── clarification_node.py     # Asks user for missing context; routes to END
     │       ├── data_analyst_node.py      # Data analyst agent (pandas + Docker sandbox)
     │       ├── parallel_planner_node.py  # Validates sub-tasks before Send fan-out
     │       ├── rag_worker_node.py        # Parallel RAG worker (one per Send)
@@ -1680,7 +1722,7 @@ langchain_agentic_chatbot_v2/
     │   └── llm_factory.py         # ProviderBundle factory (Ollama / Azure OpenAI)
     │
     ├── rag/
-    │   ├── agent.py               # Loop-based RAGAgent with 11 specialist tools
+    │   ├── agent.py               # Loop-based RAGAgent with 14 specialist tools
     │   ├── ingest.py              # File loading → structure detection → chunking → DB
     │   ├── ocr.py                 # PaddleOCR singleton + image/PDF OCR functions
     │   ├── structure_detector.py  # Regex-based doc classifier (no LLM)
@@ -1705,12 +1747,30 @@ langchain_agentic_chatbot_v2/
     │   ├── list_docs.py           # list_indexed_docs tool
     │   ├── memory_tools.py        # memory_save / memory_load / memory_list tools
     │   ├── rag_agent_tool.py      # rag_agent_tool — wraps RAGAgent as a LangChain tool
-    │   ├── rag_tools.py           # 11 RAG specialist tools (resolve, search, extract, compare, ...)
+    │   ├── rag_tools.py           # 14 RAG specialist tools (resolve, search, full_text, metadata, extract, compare, ...)
     │   ├── rag_tools_extended.py  # 5 extended RAG tools (query_rewriter, chunk_expander, ...)
     │   └── data_analyst_tools.py  # 7 data analyst tools (load_dataset, inspect_columns, execute_code, ...)
     │
     └── observability/
         └── callbacks.py           # Langfuse LangChain callback wiring
+
+frontend/                          # React chat UI (Vite + TypeScript)
+├── index.html
+├── package.json
+├── vite.config.ts                 # Port 3000; proxies /v1 and /health to backend
+└── src/
+    ├── main.tsx
+    ├── App.tsx / App.css          # Header + file upload + new chat button
+    ├── types.ts                   # Message and UploadResult interfaces
+    ├── api/client.ts              # streamChatCompletion (SSE) + uploadFiles()
+    ├── hooks/
+    │   ├── useChat.ts             # messages, isLoading, sendMessage, stopGeneration
+    │   └── useFileUpload.ts       # isUploading, uploadedFiles, upload()
+    └── components/
+        ├── ChatWindow.tsx/css     # Auto-scrolling message list
+        ├── MessageBubble.tsx/css  # Per-message bubble with typing indicator
+        ├── ChatInput.tsx/css      # Textarea + send/stop button
+        └── FileUpload.tsx/css     # Hidden file input + upload button + badge
 ```
 
 ---

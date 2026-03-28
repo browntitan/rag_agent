@@ -24,7 +24,7 @@ It can be invoked in three ways:
 `run_rag_agent()` (`src/agentic_chatbot/rag/agent.py`) does:
 
 1. Load RAG system prompt from `data/skills/rag_agent.md` (`load_rag_agent_skills`)
-2. Build 11 specialist RAG tools (`make_all_rag_tools`)
+2. Build 14 specialist RAG tools (`make_all_rag_tools`)
 3. Try native tool-calling via `create_react_agent`
 4. Run ReAct loop until completion or recursion budget
 5. Do a separate synthesis call requesting strict JSON output
@@ -39,7 +39,7 @@ If the model does not support tool-calling (`bind_tools` fails), it falls back t
 
 ---
 
-## The 11 RAG tools
+## The 14 RAG tools
 
 ### Document navigation
 
@@ -47,13 +47,17 @@ If the model does not support tool-calling (`bind_tools` fails), it falls back t
 |---|---|---|
 | `resolve_document(name_or_hint)` | resolve human title hints to doc IDs | `{"candidates": [...]}` |
 | `list_document_structure(doc_id)` | inspect clause outline before extraction/comparison | `{"doc_id": "...", "outline": [...]}` |
+| `search_by_metadata(source_type, file_type, title_contains)` | discover what's indexed before searching content | `[{"doc_id": ..., "title": ...}]` |
 
 ### Search tools
 
 | Tool | Strategy options | Typical use |
 |---|---|---|
-| `search_document(doc_id, query, strategy)` | `hybrid` / `vector` / `keyword` | document-scoped retrieval |
+| `search_document(doc_id, query, strategy)` | `hybrid` / `vector` / `keyword` | document-scoped retrieval; returns 500-char snippets + scores |
 | `search_all_documents(query, strategy)` | `hybrid` / `vector` / `keyword` | corpus-wide retrieval |
+| `full_text_search_document(doc_id, query, max_results)` | PostgreSQL `tsvector` only | when the **complete** chunk text is needed (verbatim quotes, full clauses, tables) |
+
+**Hybrid search scoring:** When `strategy='hybrid'`, results from vector and keyword lists are merged using **Reciprocal Rank Fusion (RRF)**: `score = Σ 1/(60 + rank + 1)`. Chunks appearing in both lists are labelled `method='hybrid_rrf'` and naturally ranked higher. This replaces the previous simple highest-score deduplication.
 
 ### Extraction tools
 

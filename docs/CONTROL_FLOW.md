@@ -1067,3 +1067,23 @@ HTTP request
   → rag_synthesizer_node()       merges all results
   → supervisor_node()            loop_count+1
 ```
+
+### Clarification path (new)
+```
+  → supervisor_node()            determines request is too vague
+                                 returns next_agent="clarify",
+                                         clarification_question="Which document...?"
+  → clarification_node()         emits AIMessage(content=question)
+                                 sets needs_clarification=False, next_agent="__end__"
+  → END                          turn ends; user sees the question
+  --- next user turn ---
+  → supervisor_node()            answer is now in history; routes normally
+```
+
+**When does the supervisor route to `clarify`?**
+The supervisor routes to `clarify` instead of guessing when:
+- The user refers to "the document" but nothing has been uploaded and no doc_id is in context
+- The user sends a single ambiguous word ("compare", "summarise") with no qualifying context
+- A critical parameter is clearly missing (e.g. "what's the total?" — total of what?)
+
+The clarification node does NOT loop; it exits the turn immediately. The user's next message provides the missing context, which the supervisor picks up from conversation history.
