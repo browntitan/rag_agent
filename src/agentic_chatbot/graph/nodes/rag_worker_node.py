@@ -41,7 +41,16 @@ def make_rag_worker_node(
         query = task.get("query", "")
         preferred_doc_ids = task.get("preferred_doc_ids", [])
 
-        logger.info("RAG worker %s starting: query=%r, doc_scope=%s", worker_id, query[:80], preferred_doc_ids)
+        # Enriched delegation spec fields (from parallel_planner_node)
+        objective = task.get("objective", "")
+        output_format = task.get("output_format", "")
+        boundary = task.get("boundary", "")
+        search_strategy = task.get("search_strategy", "hybrid")
+
+        logger.info(
+            "RAG worker %s starting: query=%r, doc_scope=%s, strategy=%s",
+            worker_id, query[:80], preferred_doc_ids, search_strategy,
+        )
 
         # Each worker gets its own isolated scratchpad
         session_proxy = SessionProxy(
@@ -52,6 +61,17 @@ def make_rag_worker_node(
         )
 
         context = _format_conversation_context(state.get("messages", []))
+
+        # Prepend delegation spec to conversation context so the agent
+        # has clear objectives, output format, and task boundaries
+        if objective or output_format or boundary:
+            delegation_context = "\n".join(filter(None, [
+                f"## Your Objective\n{objective}" if objective else "",
+                f"## Required Output Format\n{output_format}" if output_format else "",
+                f"## Task Boundary\n{boundary}" if boundary else "",
+                f"## Preferred Search Strategy\nUse {search_strategy} search as your primary strategy." if search_strategy else "",
+            ]))
+            context = f"{delegation_context}\n\n---\n\n{context}" if context else delegation_context
 
         try:
             contract = run_rag_agent(

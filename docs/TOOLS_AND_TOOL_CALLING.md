@@ -4,7 +4,7 @@ This codebase uses LangChain tools with LangGraph ReAct agents.
 
 - `utility_agent` (in the multi-agent graph) uses utility tools.
 - `data_analyst` (in the multi-agent graph) uses data analyst tools.
-- `run_rag_agent()` uses 11 RAG specialist tools.
+- `run_rag_agent()` uses up to 16 RAG specialist tools (11 core + 5 extended + optional graph search).
 - Legacy fallback `GeneralAgent` uses utility tools + `rag_agent_tool`.
 
 ---
@@ -96,21 +96,36 @@ Tools:
 
 This tool wraps `run_rag_agent()` and returns the same contract dict as direct/graph RAG calls.
 
-### RAG specialist tools (11)
+### RAG specialist tools (up to 16)
 
-Built by `make_all_rag_tools(stores, session)` in `tools/rag_tools.py`:
+**Core tools (11)** — built by `make_all_rag_tools(stores, session)` in `tools/rag_tools.py`:
 
 - `resolve_document`
 - `search_document`
 - `search_all_documents`
+- `full_text_search_document`
 - `extract_clauses`
 - `list_document_structure`
 - `extract_requirements`
 - `compare_clauses`
 - `diff_documents`
-- `scratchpad_write`
-- `scratchpad_read`
-- `scratchpad_list`
+- `scratchpad_write` — `persist=True` flag writes to `workspace/.artifacts/<key>.md` for cross-turn retention
+- `scratchpad_read` — falls back to persisted artifact if key not in memory
+- `scratchpad_list` — lists both memory and persisted artifact keys
+- `search_by_metadata`
+
+**Extended tools (5)** — built by `make_extended_rag_tools(stores, session, settings)` in `tools/rag_tools_extended.py`:
+
+- `query_rewriter` — reformulates low-recall queries using judge LLM
+- `chunk_expander` — retrieves surrounding context chunks for a given chunk ID
+- `document_summarizer` — produces a concise LLM-generated document summary
+- `citation_validator` — verifies a cited chunk actually supports a claim
+- `web_search_fallback` — Tavily web search when KB insufficient (requires `WEB_SEARCH_ENABLED=true`)
+
+**Knowledge graph tools (2, conditional)** — added when `GRAPHRAG_ENABLED=true`:
+
+- `graph_search_local` — entity-level Microsoft GraphRAG local search
+- `graph_search_global` — community-level Microsoft GraphRAG global search
 
 ### Data analyst tools (7)
 

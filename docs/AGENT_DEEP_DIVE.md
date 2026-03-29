@@ -20,6 +20,10 @@ Technical reference for every agent in the agentic RAG chatbot. Covers class str
 12. [General Agent Fallback](#12-general-agent-fallback)
 13. [State Schema — `AgentState`](#13-state-schema--agentstate)
 14. [Session and Proxy Objects](#14-session-and-proxy-objects)
+15. [Evaluator Node](#15-evaluator-node)
+16. [Clarification Node](#16-clarification-node)
+17. [GraphRAG Integration](#17-graphrag-integration)
+18. [Ingestion Pipeline — Contextual Retrieval](#18-ingestion-pipeline--contextual-retrieval)
 
 ---
 
@@ -379,12 +383,19 @@ run_rag_agent(...)
   │
   ├── 2. Build tools
   │       make_all_rag_tools(settings, stores, session, llm=llm, judge_llm=judge_llm)
-  │         → 11 core tools: resolve_document, search_chunks, extract_clause,
-  │                          compare_clauses, search_full_text, get_chunk_context,
-  │                          summarize_document, validate_citation,
-  │                          scratchpad_write, scratchpad_read, scratchpad_list
+  │         → core tools: resolve_document, search_document, search_all_documents,
+  │                       full_text_search_document, extract_clauses, list_document_structure,
+  │                       extract_requirements, compare_clauses, diff_documents,
+  │                       search_by_metadata,
+  │                       scratchpad_write (persist=True for cross-turn artifacts),
+  │                       scratchpad_read (fallback to .artifacts/),
+  │                       scratchpad_list
   │       if settings.rag_extended_tools_enabled:
-  │           make_extended_rag_tools(...)  → 5 additional tools
+  │           make_extended_rag_tools(...)  → 5 additional tools:
+  │             query_rewriter, chunk_expander, document_summarizer,
+  │             citation_validator, web_search_fallback
+  │       if settings.graphrag_enabled:
+  │           → add graph_search_local, graph_search_global tools
   │
   ├── 3. Tool-calling support check
   │       try: llm.bind_tools(tools) → supports_tool_calls = True
@@ -601,7 +612,15 @@ parallel_planner_node(state: AgentState) -> Dict[str, Any]
 
 Stateless function (no factory needed). Validates `state["rag_sub_tasks"]` — each task must have `query`, `preferred_doc_ids`, `worker_id`. Creates a single default task from the latest HumanMessage if the supervisor omitted sub-tasks.
 
-Returns `{"rag_sub_tasks": validated_tasks}`.
+**Enriched delegation specs:** Each task is enriched by `_build_delegation_spec(task, task_index, total_tasks)` with four additional fields:
+- `objective` — a clear statement of what the worker must find
+- `output_format` — expected format (list of facts, comparison table, etc.)
+- `boundary` — which document(s) to stay within
+- `search_strategy` — inferred from query keywords: `keyword` for definition/clause queries, `vector` for similarity queries, `hybrid` as default
+
+**Vague-query detection:** If all tasks have fewer than 3 words, the planner sets `needs_clarification=True` and `fan_out_rag_workers` routes to the clarification node instead of spawning workers.
+
+Returns `{"rag_sub_tasks": validated_and_enriched_tasks}`.
 
 ### Fan-Out via Send API
 
@@ -631,9 +650,11 @@ make_rag_worker_node(settings, stores, chat_llm, judge_llm, callbacks)
 Each worker:
 1. Reads `state["rag_sub_tasks"][0]` (always a single task due to Send)
 2. Creates its own `SessionProxy` with an empty scratchpad (isolation)
-3. Calls `run_rag_agent(...)` with `preferred_doc_ids` from the task
-4. On error: returns a graceful error contract with `confidence=0.0`
-5. Returns `{"rag_results": [{"worker_id": ..., "query": ..., "doc_scope": ..., "contract": ...}]}`
+3. Reads enriched delegation spec fields: `objective`, `output_format`, `boundary`, `search_strategy`
+4. Prepends delegation context to `conversation_context` before calling `run_rag_agent()`
+5. Calls `run_rag_agent(...)` with `preferred_doc_ids` from the task
+6. On error: returns a graceful error contract with `confidence=0.0`
+7. Returns `{"rag_results": [{"worker_id": ..., "query": ..., "doc_scope": ..., "contract": ...}]}`
 
 The `merge_rag_results` reducer in `AgentState` concatenates results from all workers:
 ```python
@@ -792,14 +813,20 @@ class AgentState(MessagesState):
     scratchpad: Dict[str, str] = {}      # last-write-wins (no reducer)
 
     # Supervisor routing
-    next_agent: str = ""  # rag_agent | utility_agent | parallel_rag | data_analyst | __end__
+    next_agent: str = ""  # rag_agent | utility_agent | parallel_rag | data_analyst | clarify | __end__
+    clarification_question: str = ""  # set by supervisor when routing to "clarify"
 
     # Parallel RAG
-    rag_sub_tasks: List[Dict[str, Any]] = []  # planner → worker fan-out
+    rag_sub_tasks: List[Dict[str, Any]] = []  # planner → worker fan-out (enriched with delegation specs)
     rag_results: Annotated[List[Dict[str, Any]], merge_rag_results] = []  # worker outputs
+    needs_clarification: bool = False  # set by planner when all sub-tasks are too vague
 
     # Final output
     final_answer: str = ""
+
+    # Evaluator
+    evaluation_result: str = ""   # "pass" | "fail" | ""
+    eval_retry_count: int = 0     # incremented on each evaluator pass; capped at 1
 ```
 
 **Key design decisions:**
@@ -888,11 +915,183 @@ sequenceDiagram
 
     loop until __end__ or max_loops
         Supervisor->>Supervisor: LLM decides next_agent
-        Supervisor->>Specialist: route to rag_agent / utility / data_analyst / parallel_rag
+        Supervisor->>Specialist: route to rag_agent / utility / data_analyst / parallel_rag / clarify
         Specialist->>Specialist: run tools (ReAct loop or Docker sandbox)
-        Specialist-->>Supervisor: append AIMessage to state
+        Specialist-->>Evaluator: rag_agent / utility / synthesizer route to evaluator
+        Evaluator->>Evaluator: grade answer (relevance, evidence, completeness, accuracy)
+        alt pass or eval_retry_count >= 1
+            Evaluator-->>Supervisor: evaluation_result="pass"
+        else fail
+            Evaluator-->>Supervisor: evaluation_result="fail", clears final_answer
+        end
     end
 
     Supervisor-->>ChatbotApp: final_answer
     ChatbotApp-->>User: text response
 ```
+
+---
+
+## 15. Evaluator Node
+
+**Module:** `src/agentic_chatbot/graph/nodes/evaluator_node.py`
+
+Implements the **Generator-Evaluator** pattern from Anthropic's harness design for long-running apps. A lightweight LLM call grades every RAG/parallel_rag response against concrete criteria before returning to the supervisor.
+
+### Factory
+
+```python
+make_evaluator_node(llm, *, criteria=None) -> Callable[[AgentState], Dict[str, Any]]
+```
+
+Default criteria (customizable via `criteria` param):
+1. **relevance** — does the answer actually address the question?
+2. **evidence** — are chunk citation IDs referenced in the answer?
+3. **completeness** — are all parts of a multi-part question addressed?
+4. **accuracy** — no hallucinated document names or non-existent sections?
+
+### Execution Logic
+
+```
+evaluator_node(state)
+  │
+  ├── Skip if last agent not in (rag_agent, parallel_rag, rag_synthesizer, supervisor)
+  │     → utility_agent and data_analyst pass through unconditionally
+  │
+  ├── Skip if eval_retry_count >= 1
+  │     → prevents infinite retry loops; accepts output on second pass regardless
+  │
+  ├── Extract final_answer from state
+  │
+  ├── LLM call: grade answer against criteria
+  │     → _parse_eval_response(): handles JSON, markdown blocks, keyword fallback
+  │
+  ├── If result == "pass":
+  │     → return {"evaluation_result": "pass"}
+  │
+  └── If result == "fail":
+        → return {
+            "evaluation_result": "fail",
+            "eval_retry_count": current + 1,
+            "final_answer": "",     # clear answer to force regeneration
+          }
+```
+
+### Routing
+
+`route_from_evaluator()` always routes to `"supervisor"`. The supervisor then either:
+- Detects `final_answer` already set → routes to `__end__` (pass case)
+- Detects `final_answer` is empty → re-routes to appropriate agent (fail/retry case)
+
+### State fields
+
+| Field | Type | Purpose |
+|---|---|---|
+| `evaluation_result` | `str` | `"pass"` / `"fail"` / `""` |
+| `eval_retry_count` | `int` | Incremented on each evaluator pass; guard at 1 |
+
+---
+
+## 16. Clarification Node
+
+**Module:** `src/agentic_chatbot/graph/nodes/clarification_node.py`
+
+Emits a clarification question as an `AIMessage` and routes to `END`, ending the turn without calling any specialist agent.
+
+### Trigger paths
+
+1. **Supervisor detects ambiguity:** sets `next_agent="clarify"` and `clarification_question="..."` in its JSON response.
+2. **Parallel planner detects vague queries:** all sub-tasks have fewer than 3 words → planner sets `needs_clarification=True` → `fan_out_rag_workers` sends to `"clarify"` instead of spawning workers.
+
+### Behavior
+
+```
+clarification_node(state)
+  → reads state["clarification_question"]
+  → returns {"messages": [AIMessage(clarification_question)], "final_answer": question}
+  → graph routes to END
+```
+
+On the next user turn, the answer is in conversation history. The supervisor can read it and route normally. No LangGraph checkpointer is required — the API client replays full message history on each request.
+
+---
+
+## 17. GraphRAG Integration
+
+**Package:** `src/agentic_chatbot/graphrag/`
+
+Opt-in Microsoft GraphRAG integration for entity and community-level knowledge graph search. Enabled via `GRAPHRAG_ENABLED=true`. Requires `pip install graphrag` and `graphrag` on PATH.
+
+### Components
+
+**`graphrag/config.py` — `generate_graphrag_settings(settings, doc_id) -> Path`**
+
+Creates a per-document project directory under `GRAPHRAG_DATA_DIR/<doc_id>/` and writes a `settings.yaml` configuring:
+- LiteLLM completion model (`GRAPHRAG_COMPLETION_MODEL`, default `gpt-4.1-mini`)
+- LiteLLM embedding model (`GRAPHRAG_EMBEDDING_MODEL`, default `text-embedding-3-small`)
+- Chunk size and overlap
+- Entity types: `PERSON, ORGANIZATION, CONCEPT, CLAUSE, REQUIREMENT, POLICY`
+- LanceDB vector store
+
+**`graphrag/indexer.py` — `run_graphrag_index(project_dir, method, timeout) -> bool`**
+
+Subprocess wrapper: runs `graphrag index --root <project_dir> --method <standard|fast>`. Called from a background daemon thread in `rag/ingest.py` after document ingestion completes. Returns `True` on success.
+
+**`graphrag/searcher.py` — `graph_search(query, project_dir, method, ...) -> str`**
+
+Subprocess wrapper: runs `graphrag query --root <project_dir> --method <local|global> --query <query>`. Returns the GraphRAG response string, or an error string if the index has not been built yet.
+
+### RAG tool integration
+
+When `GRAPHRAG_ENABLED=true`, `make_all_rag_tools()` appends:
+- `graph_search_local(query, doc_id)` — entity-level local search; best for specific entities, people, organisations, clauses
+- `graph_search_global(query)` — community-level global search; best for thematic, cross-document questions
+
+### When to use (guidance in `rag_agent.md`)
+
+Use `graph_search_local` when:
+- Question involves specific named entities, organisations, or people
+- Looking for relationships between specific concepts
+- Keyword/vector search returns no relevant results
+
+Use `graph_search_global` when:
+- Question asks for themes, patterns, or community-level insights
+- Cross-document synthesis is required
+
+---
+
+## 18. Ingestion Pipeline — Contextual Retrieval
+
+**Module:** `src/agentic_chatbot/rag/ingest.py`
+
+When `CONTEXTUAL_RETRIEVAL_ENABLED=true`, the ingestion pipeline prepends an LLM-generated context prefix to each chunk before embedding.
+
+### `_contextualize_chunks(chunks, full_text, settings, llm=None) -> List[Document]`
+
+```
+_contextualize_chunks(chunks, full_text, settings, llm=None)
+  │
+  ├── If settings.contextual_retrieval_enabled is False: return chunks unchanged
+  │
+  ├── llm = llm or build_providers(settings).judge_llm
+  │
+  └── For each chunk:
+        prompt = _CONTEXT_PROMPT.format(
+            full_text=full_text[:8000],   # truncated for token budget
+            chunk=chunk.page_content,
+        )
+        context_prefix = llm.invoke(prompt)   # 50-100 token prefix
+        chunk.page_content = f"{context_prefix}\n\n{chunk.page_content}"
+        return enriched chunks
+```
+
+The context prefix describes where in the document the chunk appears and what topic it covers, giving the embedding vector enough context to be retrieved accurately for isolated clauses or short paragraphs.
+
+### Extraction engines
+
+| `EXTRACTION_ENGINE` | How docs are loaded |
+|---|---|
+| `legacy` (default) | PyPDF2 for PDFs; PaddleOCR fallback for scanned/image pages |
+| `docling` | Docling pipeline for PDFs, DOCX, PPTX, XLSX; layout-aware Markdown output |
+
+Set via `EXTRACTION_ENGINE=docling` environment variable.

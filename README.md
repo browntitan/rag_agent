@@ -974,25 +974,27 @@ For a full governance and authoring guide, see:
 The AGENT path uses a **LangGraph supervisor graph** that routes to specialist agents instead of running a single GeneralAgent with all tools. This is built with `StateGraph` and the `Send` API for parallel execution.
 
 ```
-START → supervisor ──→ rag_agent ──→ supervisor (loop)
-                  ├──→ utility_agent ──→ supervisor (loop)
+START → supervisor ──→ rag_agent ──→ evaluator ──→ supervisor (retry once if fail, else END)
+                  ├──→ utility_agent ──→ evaluator ──→ supervisor
                   ├──→ data_analyst ──→ supervisor (loop)
                   ├──→ clarify ──→ END   (question emitted; user answers next turn)
-                  ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
+                  ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ evaluator ──→ supervisor
                   └──→ END
 ```
 
 **Supervisor** (`graph/supervisor.py`): An LLM node that reads conversation history and returns a JSON routing decision. Valid targets are loaded dynamically from `AgentRegistry` — adding a new agent automatically updates the supervisor's prompt and valid-response set. The supervisor loops: after each agent finishes, it decides whether to route to another agent or stop.
 
+**Evaluator Node** (`graph/nodes/evaluator_node.py`): Implements the Generator-Evaluator pattern from Anthropic's harness design. After each RAG response, a lightweight LLM call grades the answer against four criteria: relevance, evidence (chunk citations), completeness, and accuracy. On failure, it clears `final_answer` and routes back to the supervisor for one retry. On a second pass (or for non-RAG agents), it accepts the answer unconditionally to prevent infinite loops.
+
 **Clarification Node** (`graph/nodes/clarification_node.py`): When the supervisor determines that the request is too vague or ambiguous to route safely (e.g. "summarise the document" with no document in context), it sets `next_agent="clarify"` and includes a `clarification_question`. The clarification node emits the question as an `AIMessage` and routes directly to END — ending the turn without calling any specialist. On the next user turn, the answer is in conversation history and the supervisor can route normally. No LangGraph checkpointer required; works with the existing stateless API design.
 
-**RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. All 14 RAG tools are available.
+**RAG Agent** (`graph/nodes/rag_node.py`): Wraps the existing `run_rag_agent()` as a graph node. Up to 16 RAG tools available (14 core + optional `graph_search_local` and `graph_search_global` when `GRAPHRAG_ENABLED=true`).
 
 **Utility Agent** (`graph/nodes/utility_node.py`): A `create_react_agent` subgraph with `calculator`, `list_indexed_docs`, and `memory_*` tools.
 
 **Data Analyst Agent** (`graph/nodes/data_analyst_node.py`): A `create_react_agent` subgraph with 7 tools for loading and analysing Excel/CSV datasets. Code runs in an isolated Docker sandbox (network disabled, memory limited, auto-removed). The agent follows a mandatory plan-verify-reflect workflow enforced by `data/skills/data_analyst_agent.md`. Automatically disabled if Docker is unavailable.
 
-**Parallel RAG** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. Results are merged by `rag_synthesizer` through a reducer that supports parallel append plus explicit post-synthesis clearing.
+**Parallel RAG with enriched delegation** (`graph/nodes/rag_worker_node.py`): Uses the LangGraph `Send` API to fan out N `rag_worker` nodes in parallel — one per document. The planner enriches each sub-task with an `objective`, `output_format`, `boundary`, and `search_strategy` so workers don't duplicate searches. Results are merged by `rag_synthesizer` and graded by the evaluator.
 
 **Fallback**: If the graph cannot run due capability/config limitations (for example tool-calling incompatibility), the orchestrator falls back to the legacy single-agent path (`run_general_agent` with `rag_agent_tool`). Unexpected graph runtime errors are surfaced explicitly instead of silently masking defects.
 
@@ -1589,6 +1591,16 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `DEFAULT_CONVERSATION_ID` | `local-session` | No | Default conversation scope for CLI/demo/local runs |
 | `GATEWAY_MODEL_ID` | `enterprise-agent` | No | Public model ID exposed by `/v1/models` |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
+| `CONTEXTUAL_RETRIEVAL_ENABLED` | `false` | No | Prepend LLM-generated context to each chunk at ingest time (improves retrieval; uses judge LLM) |
+| `EXTRACTION_ENGINE` | `legacy` | No | Document extraction engine: `legacy` (PyPDF+PaddleOCR) or `docling` (layout-aware, handles PDFs/DOCX/XLSX/PPTX) |
+| `DOCLING_OCR_ENABLED` | `true` | No | Enable OCR within the Docling pipeline (only used when `EXTRACTION_ENGINE=docling`) |
+| `GRAPHRAG_ENABLED` | `false` | No | Enable Microsoft GraphRAG knowledge graph indexing at ingest time and graph search tools |
+| `GRAPHRAG_DATA_DIR` | `data/graphrag` | No | Directory where per-document GraphRAG project folders are stored |
+| `GRAPHRAG_COMPLETION_MODEL` | `gpt-4.1-mini` | No | LLM used for GraphRAG entity extraction and community summarization |
+| `GRAPHRAG_EMBEDDING_MODEL` | `text-embedding-3-small` | No | Embedding model used by GraphRAG (OpenAI-compatible) |
+| `GRAPHRAG_CHUNK_SIZE` | `1200` | No | Token chunk size for GraphRAG indexing |
+| `GRAPHRAG_CHUNK_OVERLAP` | `100` | No | Token overlap between GraphRAG chunks |
+| `GRAPHRAG_INDEX_METHOD` | `standard` | No | GraphRAG index method: `standard` or `fast` |
 | `USE_PADDLE_OCR` | `true` | No | Enable PaddleOCR for images and scanned PDFs |
 | `OCR_LANGUAGE` | `en` | No | PaddleOCR language code |
 | `OCR_USE_GPU` | `false` | No | Use GPU for OCR (requires CUDA) |
@@ -1705,9 +1717,10 @@ langchain_agentic_chatbot_v2/
     │       ├── rag_node.py        # Single RAG agent node (wraps run_rag_agent)
     │       ├── utility_node.py    # Utility agent subgraph (calc, memory, list_docs)
     │       ├── clarification_node.py     # Asks user for missing context; routes to END
+    │       ├── evaluator_node.py         # Generator-Evaluator: grades RAG output; max 1 retry
     │       ├── data_analyst_node.py      # Data analyst agent (pandas + Docker sandbox)
-    │       ├── parallel_planner_node.py  # Validates sub-tasks before Send fan-out
-    │       ├── rag_worker_node.py        # Parallel RAG worker (one per Send)
+    │       ├── parallel_planner_node.py  # Validates + enriches sub-tasks (delegation specs)
+    │       ├── rag_worker_node.py        # Parallel RAG worker (reads delegation spec)
     │       └── rag_synthesizer_node.py   # Merges parallel RAG results
     │
     ├── db/
@@ -1721,9 +1734,15 @@ langchain_agentic_chatbot_v2/
     ├── providers/
     │   └── llm_factory.py         # ProviderBundle factory (Ollama / Azure OpenAI)
     │
+    ├── graphrag/                  # Microsoft GraphRAG integration (opt-in, GRAPHRAG_ENABLED)
+    │   ├── __init__.py
+    │   ├── config.py              # Generates per-document settings.yaml for graphrag CLI
+    │   ├── indexer.py             # Subprocess wrapper: graphrag index (background thread)
+    │   └── searcher.py            # Subprocess wrapper: graphrag query (local/global search)
+    │
     ├── rag/
-    │   ├── agent.py               # Loop-based RAGAgent with 14 specialist tools
-    │   ├── ingest.py              # File loading → structure detection → chunking → DB
+    │   ├── agent.py               # Loop-based RAGAgent with up to 16 specialist tools
+    │   ├── ingest.py              # File loading → structure detection → chunking → contextual retrieval → DB
     │   ├── ocr.py                 # PaddleOCR singleton + image/PDF OCR functions
     │   ├── structure_detector.py  # Regex-based doc classifier (no LLM)
     │   ├── clause_splitter.py     # Clause-boundary document splitter
@@ -1747,7 +1766,7 @@ langchain_agentic_chatbot_v2/
     │   ├── list_docs.py           # list_indexed_docs tool
     │   ├── memory_tools.py        # memory_save / memory_load / memory_list tools
     │   ├── rag_agent_tool.py      # rag_agent_tool — wraps RAGAgent as a LangChain tool
-    │   ├── rag_tools.py           # 14 RAG specialist tools (resolve, search, full_text, metadata, extract, compare, ...)
+    │   ├── rag_tools.py           # Up to 16 RAG tools (core 14 + graph_search_local/global when GraphRAG enabled); persistent scratchpad
     │   ├── rag_tools_extended.py  # 5 extended RAG tools (query_rewriter, chunk_expander, ...)
     │   └── data_analyst_tools.py  # 7 data analyst tools (load_dataset, inspect_columns, execute_code, ...)
     │

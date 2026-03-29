@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -237,6 +237,16 @@ def get_request_context(
 
 app = FastAPI(title="Agentic Gateway", version="1.0.0")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health/live")
 def health_live() -> Dict[str, str]:
@@ -375,6 +385,78 @@ def ingest_documents(
         "ingested_count": len(doc_ids),
         "doc_ids": doc_ids,
         "missing_paths": missing,
+    }
+    if workspace_copies:
+        result["workspace_copies"] = workspace_copies
+    return result
+
+
+@app.post("/v1/upload")
+async def upload_files(
+    files: List[UploadFile] = File(...),
+    source_type: str = "upload",
+    runtime: Runtime = Depends(get_runtime_or_503),
+    x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+) -> Dict[str, Any]:
+    """Accept multipart file uploads from the frontend.
+
+    Saves files to the uploads directory, ingests them into the KB,
+    and optionally copies them into the session workspace.
+    """
+    ctx = get_request_context(
+        runtime,
+        conversation_id=x_conversation_id,
+        request_id=x_request_id,
+    )
+    logger.info(
+        "upload_files request tenant=%s conversation=%s files=%d",
+        ctx.tenant_id,
+        ctx.conversation_id,
+        len(files),
+    )
+
+    uploads_dir = runtime.settings.uploads_dir
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: List[Path] = []
+    errors: List[str] = []
+    for file in files:
+        try:
+            dest = uploads_dir / (file.filename or f"upload_{uuid.uuid4().hex}")
+            content_bytes = await file.read()
+            dest.write_bytes(content_bytes)
+            saved_paths.append(dest)
+        except Exception as e:
+            errors.append(f"{file.filename}: {str(e)}")
+
+    doc_ids = ingest_paths(
+        runtime.settings,
+        runtime.bot.ctx.stores,
+        saved_paths,
+        source_type=source_type,
+        tenant_id=ctx.tenant_id,
+    )
+
+    # Copy to workspace if active
+    ws_id = x_conversation_id or runtime.settings.default_conversation_id
+    ws_root = runtime.settings.workspace_dir / ws_id
+    workspace_copies: List[str] = []
+    if ws_root.is_dir():
+        for p in saved_paths:
+            try:
+                shutil.copy2(p, ws_root / p.name)
+                workspace_copies.append(p.name)
+            except Exception:
+                pass
+
+    result: Dict[str, Any] = {
+        "object": "upload.result",
+        "tenant_id": ctx.tenant_id,
+        "ingested_count": len(doc_ids),
+        "doc_ids": doc_ids,
+        "filenames": [p.name for p in saved_paths],
+        "errors": errors,
     }
     if workspace_copies:
         result["workspace_copies"] = workspace_copies

@@ -5,9 +5,12 @@ This project supports **Langfuse** (via LangChain callbacks) for runtime observa
 When enabled, traces include:
 
 - turn-level metadata (`trace_name`, `session_id`, router route/confidence/reasons)
-- multi-agent graph activity (supervisor, utility agent, RAG nodes/synthesizer)
+- multi-agent graph activity (supervisor, utility agent, RAG nodes/synthesizer, evaluator node)
+- evaluator LLM calls (grading each RAG response; visible as a separate span)
 - fallback `GeneralAgent` tool calls and outputs (when fallback path is used)
 - upload ingestion traces (`upload_ingest`)
+
+Note: GraphRAG indexing runs in a background daemon thread and is not instrumented by Langfuse callbacks. GraphRAG query calls (`graph_search_local`, `graph_search_global`) appear in traces as subprocess tool calls within the RAG agent span.
 
 If Langfuse keys are missing or handler setup fails, callbacks are disabled safely.
 

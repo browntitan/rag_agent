@@ -54,7 +54,7 @@ User Message ──HTTP──►  │  GATEWAY (FastAPI)                        
                         │  SPECIALISTS (Multi-Agent Graph)            │
                         │  graph/builder.py + graph/supervisor.py     │
                         │  rag_agent | utility_agent | data_analyst   │
-                        │  parallel_rag                               │
+                        │  parallel_rag | evaluator | clarify         │
                         └─────────────────────────────────────────────┘
 ```
 
@@ -468,6 +468,7 @@ utility_fn      = make_utility_agent_node(chat_llm, settings, stores, session_pr
 rag_worker_fn   = make_rag_worker_node(settings, stores, chat_llm, judge_llm, ...)
 rag_synthesizer = make_rag_synthesizer_node(chat_llm, settings=settings, ...)
 data_analyst_fn = make_data_analyst_node(chat_llm, settings, stores, session_proxy, ...)  # if Docker
+evaluator_fn    = make_evaluator_node(judge_llm)
 ```
 Each `make_*_node()` function is a **factory** that returns a closure. The closure
 captures its dependencies (LLM clients, tools, session proxy) in its scope and accepts
@@ -485,15 +486,18 @@ graph.add_node("parallel_planner", parallel_planner_node)
 graph.add_node("rag_worker",       rag_worker_fn)
 graph.add_node("rag_synthesizer",  rag_synthesizer_fn)
 graph.add_node("data_analyst",     data_analyst_fn)  # if Docker
+graph.add_node("evaluator",        evaluator_fn)     # quality gate for RAG outputs
+graph.add_node("clarify",          clarification_node)  # emits clarification → END
 
 graph.add_edge(START, "supervisor")                  # always start at supervisor
 graph.add_conditional_edges("supervisor", route_from_supervisor, {...})
-graph.add_edge("rag_agent",    "supervisor")         # loop back
-graph.add_edge("utility_agent","supervisor")         # loop back
-graph.add_edge("data_analyst", "supervisor")         # loop back
-graph.add_conditional_edges("parallel_planner", fan_out_rag_workers, [...])
-graph.add_edge("rag_worker",   "rag_synthesizer")
-graph.add_edge("rag_synthesizer", "supervisor")      # loop back
+graph.add_edge("rag_agent",       "evaluator")       # RAG → quality gate
+graph.add_edge("utility_agent",   "evaluator")       # utility → quality gate
+graph.add_edge("data_analyst",    "supervisor")      # structured output → skip evaluator
+graph.add_conditional_edges("parallel_planner", fan_out_rag_workers, ["rag_worker", "rag_synthesizer", "clarify"])
+graph.add_edge("rag_worker",      "rag_synthesizer")
+graph.add_edge("rag_synthesizer", "evaluator")       # synthesizer → quality gate
+graph.add_conditional_edges("evaluator", route_from_evaluator, {"supervisor": "supervisor"})
 
 compiled = graph.compile()
 ```
@@ -508,25 +512,25 @@ supervisor ───────────────────────
   │                                                       ▲
   │ (reads state["next_agent"])                           │
   │                                                       │
-  ├──► rag_agent ────────────────────────────────────────┤
-  │         │                                             │
-  │         └──────────── back to supervisor ────────────┤
+  ├──► rag_agent ──► evaluator ──────────────────────────┤
+  │                      │ (fail+retry: clears final_answer, back to supervisor)
   │                                                       │
-  ├──► utility_agent ────────────────────────────────────┤
-  │         │                                             │
-  │         └──────────── back to supervisor ────────────┤
+  ├──► utility_agent ──► evaluator ──────────────────────┤
   │                                                       │
   ├──► data_analyst ────────────────────────────────────►┤
   │         │                                             │
   │         └──────────── back to supervisor ────────────┤
   │                                                       │
-  └──► parallel_planner                                   │
-            │                                             │
-            ├──► rag_worker_1 ─┐                         │
-            ├──► rag_worker_2 ─┤                         │
-            ├──► rag_worker_3 ─┼──► rag_synthesizer ────►┤
-            └──► rag_worker_N ─┘         │               │
-                                         └── back to supervisor
+  ├──► clarify ─────────────────────────────────────────► END (turn ends, question emitted)
+  │
+  └──► parallel_planner
+            │
+            ├──► (vague) clarify ─────────────────────── END
+            │
+            ├──► rag_worker_1 ─┐
+            ├──► rag_worker_2 ─┤
+            ├──► rag_worker_3 ─┼──► rag_synthesizer ──► evaluator ──► supervisor
+            └──► rag_worker_N ─┘
 ```
 
 ### What `AgentState` is (`graph/state.py`)
@@ -668,18 +672,22 @@ After the supervisor node updates `next_agent` in the state, LangGraph calls the
 conditional edge function to decide which node to execute next:
 
 ```python
-# graph/builder.py, line 138
+# graph/builder.py
 def route_from_supervisor(state: AgentState) -> str:
     next_agent = state.get("next_agent", "__end__")
     if next_agent == "rag_agent":        return "rag_agent"
     elif next_agent == "utility_agent":  return "utility_agent"
     elif next_agent == "parallel_rag":   return "parallel_planner"
     elif next_agent == "data_analyst":   return "data_analyst"
+    elif next_agent == "clarify":        return "clarify"
     else:                                return END
+
+def route_from_evaluator(state: AgentState) -> str:
+    # Evaluator always routes back to supervisor, which decides END or retry
+    return "supervisor"
 ```
 
-The selected node runs, returns its messages, and the graph follows the fixed edge
-back to "supervisor". This is the outer loop.
+**RAG/utility agents now route to `evaluator` first**, then `evaluator` routes to `supervisor`. The supervisor on the next iteration detects whether `final_answer` is set (pass) or empty (retry).
 
 ### The full outer loop, step by step
 
@@ -695,15 +703,23 @@ graph.invoke(initial_state)
     │
     ▼
 [rag_agent_node]
-    Runs run_rag_agent() (inner ReAct loop, see Section 8)
-    Returns: {"messages": [AIMessage(content=answer)]}
+    Runs run_rag_agent() (inner ReAct loop, see Section 9)
+    Returns: {"messages": [AIMessage(answer)], "final_answer": "..."}
     │
-    ▼ fixed edge: rag_agent → supervisor
+    ▼ fixed edge: rag_agent → evaluator
+    │
+    ▼
+[evaluator_node]
+    LLM grades answer on 4 criteria
+    Pass: Returns: {"evaluation_result": "pass"}
+    Fail: Returns: {"evaluation_result": "fail", "eval_retry_count": 1, "final_answer": ""}
+    │
+    ▼ conditional edge: route_from_evaluator → "supervisor"
     │
     ▼
 [supervisor] loop_count=2
-    LLM sees updated history including the RAG answer
-    Decides: "__end__" (question has been answered)
+    Pass case: final_answer is set → Decides: "__end__"
+    Fail case: final_answer is empty → Re-routes to "rag_agent" (one retry)
     Returns: {"next_agent": "__end__", "final_answer": "..."}
     │
     ▼ conditional edge: END

@@ -14,6 +14,9 @@ Host filesystem:
     analysis_results.csv     ← written by execute_code in turn 2
     notes.md                 ← written by agent via workspace_write tool
     report.txt               ← written by execute_code in turn 5
+    .artifacts/
+      analysis_plan.md       ← written by scratchpad_write(key, value, persist=True)
+      interim_findings.md    ← persisted scratchpad artifacts survive turn boundaries
 
 Container (each execute_code call):
   /workspace/  → bind-mounted read-write from data/workspaces/<session_id>/
@@ -188,6 +191,21 @@ settings.workspace_session_ttl_hours  # int
 
 ---
 
+## Scratchpad Artifact Persistence
+
+The RAG agent's `scratchpad_write` tool supports a `persist=True` flag that writes to the `.artifacts/` subdirectory of the workspace:
+
+```python
+scratchpad_write(key="my_analysis", value="...", persist=True)
+# → workspace/.artifacts/my_analysis.md
+```
+
+On subsequent turns, `scratchpad_read("my_analysis")` checks memory first, then falls back to reading from `.artifacts/my_analysis.md`. `scratchpad_list()` includes both in-memory keys and persisted artifact filenames.
+
+This provides lightweight cross-turn file-based handoffs (Anthropic harness pattern) without requiring the full PostgreSQL memory stack.
+
+---
+
 ## Architecture Reference
 
 | Component | File | Role |
@@ -197,5 +215,6 @@ settings.workspace_session_ttl_hours  # int
 | `workspace` field | `agents/session.py` | Attached to `ChatSession` |
 | `workspace` field | `graph/session_proxy.py` | Propagated to graph nodes |
 | Lazy open + upload copy | `agents/orchestrator.py` | Opens workspace on first turn; copies uploads |
-| `workspace_write/read/list` tools | `tools/data_analyst_tools.py` | Agent-callable tools |
+| `workspace_write/read/list` tools | `tools/data_analyst_tools.py` | Agent-callable tools (data analyst) |
+| `scratchpad_write(persist=True)` | `tools/rag_tools.py` | RAG agent cross-turn artifact persistence |
 | `conversation_id` copy | `api/main.py` | Ingest endpoint workspace sync |

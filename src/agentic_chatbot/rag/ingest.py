@@ -199,6 +199,91 @@ def _split_with_structure(
 
 
 # ---------------------------------------------------------------------------
+# Contextual Retrieval — prepend LLM-generated context to each chunk
+# ---------------------------------------------------------------------------
+
+_CONTEXT_PROMPT = """\
+<document>
+{doc_text}
+</document>
+
+Here is the chunk we want to situate within the overall document:
+<chunk>
+{chunk_text}
+</chunk>
+
+Give a short succinct context to situate this chunk within the overall \
+document for the purposes of improving search retrieval of the chunk. \
+Answer only with the succinct context and nothing else."""
+
+
+def _contextualize_chunks(
+    chunks: List[Document],
+    full_text: str,
+    settings: Settings,
+    llm=None,
+) -> List[Document]:
+    """Prepend LLM-generated context to each chunk for better retrieval.
+
+    Uses an LLM to generate a 50-100 token context prefix per chunk.
+    The full document text is sent once per batch and cached by the provider.
+
+    Ref: https://www.anthropic.com/engineering/contextual-retrieval
+
+    Args:
+        chunks: List of document chunks to contextualize.
+        full_text: The full document text (used as context window).
+        settings: Application settings.
+        llm: Optional pre-built LLM instance. When None, attempts to build
+             one from settings via the provider bundle.
+    """
+    if not getattr(settings, "contextual_retrieval_enabled", False):
+        return chunks
+
+    if llm is None:
+        try:
+            from agentic_chatbot.providers.llm_factory import build_providers  # noqa: PLC0415
+            bundle = build_providers(settings)
+            llm = bundle.judge_llm
+        except Exception as e:
+            logger.warning("Could not create LLM for contextual retrieval: %s — skipping", e)
+            return chunks
+
+    # Truncate doc text to avoid token limits (keep first ~25k chars)
+    doc_preview = full_text[:25000]
+    contextualized = []
+
+    for chunk in chunks:
+        try:
+            prompt = _CONTEXT_PROMPT.format(
+                doc_text=doc_preview,
+                chunk_text=chunk.page_content[:3000],
+            )
+            result = llm.invoke(prompt)
+            context = result.content if hasattr(result, "content") else str(result)
+            context = context.strip()
+
+            if context and len(context) < 500:
+                new_chunk = Document(
+                    page_content=f"{context}\n\n{chunk.page_content}",
+                    metadata={**chunk.metadata, "has_context_prefix": True},
+                )
+                contextualized.append(new_chunk)
+            else:
+                contextualized.append(chunk)
+        except Exception as e:
+            logger.debug("Contextual retrieval failed for chunk: %s", e)
+            contextualized.append(chunk)
+
+    logger.info(
+        "Contextualized %d/%d chunks",
+        sum(1 for c in contextualized if c.metadata.get("has_context_prefix")),
+        len(contextualized),
+    )
+    return contextualized
+
+
+# ---------------------------------------------------------------------------
 # ChunkRecord builder
 # ---------------------------------------------------------------------------
 
@@ -291,6 +376,10 @@ def ingest_paths(
         structure = detect_structure(full_text)
 
         chunks = _split_with_structure(settings, raw_docs, structure)
+
+        # Contextual Retrieval: prepend LLM-generated context to each chunk
+        chunks = _contextualize_chunks(chunks, full_text, settings)
+
         chunk_records = _build_chunk_records(chunks, doc_id)
 
         # Persist parent doc row first (chunks.doc_id has FK -> documents.doc_id).
@@ -319,7 +408,49 @@ def ingest_paths(
 
         ingested_doc_ids.append(doc_id)
 
+        # GraphRAG: trigger background knowledge graph indexing
+        if getattr(settings, "graphrag_enabled", False):
+            _trigger_graphrag_index(full_text, doc_id, settings)
+
     return ingested_doc_ids
+
+
+def _trigger_graphrag_index(full_text: str, doc_id: str, settings: Settings) -> None:
+    """Trigger GraphRAG indexing in a background thread.
+
+    GraphRAG indexing is expensive (multiple LLM calls for entity extraction,
+    community detection, summarization). Running it in a background thread
+    prevents blocking the ingest response.
+    """
+    import threading  # noqa: PLC0415
+
+    def _index() -> None:
+        try:
+            from agentic_chatbot.graphrag.config import generate_graphrag_settings  # noqa: PLC0415
+            from agentic_chatbot.graphrag.indexer import run_graphrag_index, graphrag_available  # noqa: PLC0415
+
+            if not graphrag_available():
+                logger.info("GraphRAG CLI not available — skipping graph indexing for %s", doc_id)
+                return
+
+            project_dir = generate_graphrag_settings(settings, doc_id)
+            input_file = project_dir / "input" / f"{doc_id}.txt"
+            input_file.write_text(full_text, encoding="utf-8")
+
+            success = run_graphrag_index(
+                project_dir,
+                method=settings.graphrag_index_method,
+            )
+            if success:
+                logger.info("GraphRAG index built for %s", doc_id)
+            else:
+                logger.warning("GraphRAG indexing failed for %s", doc_id)
+
+        except Exception as e:
+            logger.error("GraphRAG background indexing error for %s: %s", doc_id, e)
+
+    thread = threading.Thread(target=_index, daemon=True, name=f"graphrag-{doc_id[:12]}")
+    thread.start()
 
 
 def ensure_kb_indexed(settings: Settings, stores: KnowledgeStores, tenant_id: str) -> None:

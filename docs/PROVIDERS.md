@@ -161,3 +161,15 @@ GROUNDED_ANSWER_PROMPT_PATH=./data/prompts/grounded_answer.txt
 RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/rag_synthesis.txt
 PARALLEL_RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/parallel_rag_synthesis.txt
 ```
+
+## GraphRAG LLM Config (opt-in)
+
+Microsoft GraphRAG uses its own LLM settings, separate from the main app providers. These are configured via `graphrag/config.py` (written to per-document `settings.yaml`):
+
+```bash
+# GraphRAG uses LiteLLM under the hood — these must be OpenAI-compatible endpoints
+GRAPHRAG_COMPLETION_MODEL=gpt-4.1-mini     # entity extraction + community summarization
+GRAPHRAG_EMBEDDING_MODEL=text-embedding-3-small  # chunk embeddings for the graph index
+```
+
+GraphRAG does not share the app's `LLM_PROVIDER` / `JUDGE_PROVIDER` config. It requires direct OpenAI-compatible API access (the `OPENAI_API_KEY` environment variable must be set, or LiteLLM configured with your provider). See GraphRAG docs for non-OpenAI provider configuration.

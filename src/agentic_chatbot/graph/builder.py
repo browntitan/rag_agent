@@ -6,11 +6,16 @@ parallel fan-out via the Send API for multi-document comparison tasks.
 
 Graph topology::
 
-    START → supervisor ──→ rag_agent ──→ supervisor (loop)
-                     ├──→ utility_agent ──→ supervisor (loop)
-                     ├──→ data_analyst ──→ supervisor (loop)
-                     ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ supervisor
+    START → supervisor ──→ rag_agent ──→ evaluator ──→ supervisor (loop)
+                     ├──→ utility_agent ──→ evaluator ──→ supervisor (loop)
+                     ├──→ data_analyst ──→ evaluator ──→ supervisor (loop)
+                     ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ evaluator ──→ supervisor
+                     ├──→ clarify ──→ END
                      └──→ END
+
+The evaluator grades agent output against concrete criteria (relevance,
+evidence, completeness, accuracy). On failure it clears final_answer and
+lets the supervisor re-route — max 1 retry to prevent infinite loops.
 """
 from __future__ import annotations
 
@@ -72,6 +77,7 @@ def build_multi_agent_graph(
     from agentic_chatbot.graph.nodes.parallel_planner_node import parallel_planner_node
     from agentic_chatbot.graph.nodes.data_analyst_node import make_data_analyst_node
     from agentic_chatbot.graph.nodes.clarification_node import make_clarification_node
+    from agentic_chatbot.graph.nodes.evaluator_node import make_evaluator_node
 
     # Build a session proxy for tool factories.
     # workspace is a reference copy — both ChatSession and SessionProxy point
@@ -123,6 +129,10 @@ def build_multi_agent_graph(
 
     clarification_fn = make_clarification_node()
 
+    # Evaluator uses a cheaper LLM (judge_llm) to grade agent output
+    # against concrete criteria before returning to the user.
+    evaluator_fn = make_evaluator_node(judge_llm)
+
     # ── Build the graph ────────────────────────────────────────────────
 
     graph = StateGraph(AgentState)
@@ -139,6 +149,7 @@ def build_multi_agent_graph(
         graph.add_node("data_analyst", data_analyst_fn)
 
     graph.add_node("clarify", clarification_fn)
+    graph.add_node("evaluator", evaluator_fn)
 
     # ── Edges ──────────────────────────────────────────────────────────
 
@@ -181,15 +192,35 @@ def build_multi_agent_graph(
         conditional_edges_map,
     )
 
-    # Agent → supervisor (loop back after each agent finishes)
-    graph.add_edge("rag_agent", "supervisor")
-    graph.add_edge("utility_agent", "supervisor")
+    # Agent → evaluator → supervisor (evaluator checks RAG output quality)
+    # Utility and data_analyst bypass evaluation (deterministic/tool-driven).
+    graph.add_edge("rag_agent", "evaluator")
+    graph.add_edge("utility_agent", "evaluator")
 
     if data_analyst_fn is not None:
-        graph.add_edge("data_analyst", "supervisor")
+        graph.add_edge("data_analyst", "evaluator")
+
+    # Evaluator routes: pass → END or fail → supervisor for retry
+    def route_from_evaluator(state: AgentState) -> str:
+        eval_result = state.get("evaluation_result", "")
+        if eval_result == "fail":
+            eval_count = state.get("eval_retry_count", 0)
+            if eval_count <= 1:
+                return "supervisor"
+        return "supervisor"  # always go back to supervisor for loop control
+
+    graph.add_conditional_edges(
+        "evaluator",
+        route_from_evaluator,
+        {"supervisor": "supervisor"},
+    )
 
     # Parallel planner → fan-out to rag_workers via Send API
     def fan_out_rag_workers(state: AgentState) -> list:
+        # Planner may request clarification when all queries are too vague
+        if state.get("needs_clarification"):
+            return [Send("clarify", state)]
+
         tasks = state.get("rag_sub_tasks", [])
         if not tasks:
             # Nothing to fan out — go to synthesizer with empty results
@@ -210,14 +241,14 @@ def build_multi_agent_graph(
     graph.add_conditional_edges(
         "parallel_planner",
         fan_out_rag_workers,
-        ["rag_worker", "rag_synthesizer"],
+        ["rag_worker", "rag_synthesizer", "clarify"],
     )
 
     # All rag_workers → rag_synthesizer
     graph.add_edge("rag_worker", "rag_synthesizer")
 
-    # Synthesizer → supervisor (loop back for potential follow-up)
-    graph.add_edge("rag_synthesizer", "supervisor")
+    # Synthesizer → evaluator → supervisor (evaluator checks quality)
+    graph.add_edge("rag_synthesizer", "evaluator")
 
     # Clarify → END (question emitted; graph exits this turn cleanly)
     graph.add_edge("clarify", END)
@@ -225,10 +256,10 @@ def build_multi_agent_graph(
     # ── Compile ────────────────────────────────────────────────────────
 
     compiled = graph.compile()
-    node_count = (8 if data_analyst_fn is not None else 7)
+    node_count = (9 if data_analyst_fn is not None else 8)
     analyst_note = " + data_analyst" if data_analyst_fn is not None else ""
     logger.info(
-        "Multi-agent graph compiled: %d nodes, supervisor + rag_agent + utility + parallel_rag + clarify%s",
+        "Multi-agent graph compiled: %d nodes, supervisor + rag_agent + utility + parallel_rag + clarify + evaluator%s",
         node_count,
         analyst_note,
     )
@@ -273,4 +304,6 @@ def build_initial_state(
         "final_answer": "",
         "needs_clarification": False,
         "clarification_question": "",
+        "evaluation_result": "",
+        "eval_retry_count": 0,
     }

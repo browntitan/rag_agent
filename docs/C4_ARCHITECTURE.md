@@ -117,13 +117,16 @@ flowchart LR
     ragNode["RAG Node"]
     utilNode["Utility Node"]
     dataNode["Data Analyst Node\n(pandas + Docker sandbox)"]
-    planner["Parallel Planner"]
+    planner["Parallel Planner\n(enriched delegation specs)"]
     worker["RAG Worker(s)"]
     synth["RAG Synthesizer"]
+    evaluator["Evaluator Node\n(Generator-Evaluator, max 1 retry)"]
+    clarify["Clarification Node\n(turn-ending, routes to END)"]
 
     ragCore["RAG Core\nrun_rag_agent()"]
-    ragTools["RAG Toolset\nresolve/search/extract/compare/scratchpad"]
-    ingest["Ingestion Pipeline\ningest_paths() + OCR/structure split"]
+    ragTools["RAG Toolset\nresolve/search/extract/compare/scratchpad\n+extended(5)+graph_search(opt-in)"]
+    ingest["Ingestion Pipeline\ningest_paths() + OCR/structure split\n+contextual retrieval(opt-in)"]
+    graphrag["GraphRAG\n(opt-in: entity/community indexing + search)"]
     stores["Store Layer\nDocumentStore / ChunkStore / MemoryStore"]
     db["PostgreSQL\n(pgvector + pg_trgm)"]
     fs["Filesystem Sources\ndata/kb, uploads, prompts, skills"]
@@ -155,9 +158,13 @@ flowchart LR
     sup -->|"utility_agent"| utilNode
     sup -->|"data_analyst"| dataNode
     sup -->|"parallel_rag"| planner
+    sup -->|"clarify"| clarify
     planner --> worker
     worker --> synth
-    synth --> sup
+    synth --> evaluator
+    ragNode --> evaluator
+    utilNode --> evaluator
+    evaluator -->|"pass/retry"| sup
     dataNode --> sup
 
     graph -->|"capability/config error only"| fallback
@@ -169,7 +176,9 @@ flowchart LR
     worker --> ragCore
     ragCore --> ragTools
     ragTools --> stores
+    ragTools -.->|"graph_search (opt-in)"| graphrag
     ingest --> stores
+    ingest -.->|"graphrag index (opt-in)"| graphrag
     stores --> db
     ingest --> fs
     ragCore --> fs
@@ -205,10 +214,13 @@ flowchart LR
 | Agent Registry | Dynamic agent catalog; renders `{{available_agents}}` into supervisor prompt | `src/agentic_chatbot/agents/agent_registry.py` |
 | RAG Node + Worker(s) | Single and parallel RAG execution adapters | `src/agentic_chatbot/graph/nodes/rag_node.py`, `src/agentic_chatbot/graph/nodes/rag_worker_node.py` |
 | RAG Synthesizer | Merge worker outputs and clear worker state | `src/agentic_chatbot/graph/nodes/rag_synthesizer_node.py`, `src/agentic_chatbot/graph/state.py` |
+| Evaluator Node | Generator-Evaluator quality gate; max 1 retry for RAG outputs | `src/agentic_chatbot/graph/nodes/evaluator_node.py` |
+| Clarification Node | Emits clarification question and ends turn | `src/agentic_chatbot/graph/nodes/clarification_node.py` |
 | Legacy Fallback | Single-agent ReAct path for capability/config fallback | `src/agentic_chatbot/agents/general_agent.py` |
 | RAG Core | Tool-calling RAG loop + synthesis contract | `src/agentic_chatbot/rag/agent.py` |
-| RAG Tools | Retrieval, extraction, comparison, scratchpad operations | `src/agentic_chatbot/tools/rag_tools.py` |
-| Ingestion Pipeline | File loading, OCR fallback, structure-aware chunking | `src/agentic_chatbot/rag/ingest.py`, `src/agentic_chatbot/rag/ocr.py` |
+| RAG Tools | Retrieval, extraction, comparison, scratchpad (+ extended + graph search) | `src/agentic_chatbot/tools/rag_tools.py`, `src/agentic_chatbot/tools/rag_tools_extended.py` |
+| Ingestion Pipeline | File loading, OCR/Docling, structure-aware chunking, contextual retrieval (opt-in) | `src/agentic_chatbot/rag/ingest.py`, `src/agentic_chatbot/rag/ocr.py` |
+| GraphRAG (opt-in) | Microsoft GraphRAG entity/community indexing and search | `src/agentic_chatbot/graphrag/` |
 | Store Layer | PostgreSQL-backed document/chunk/memory IO | `src/agentic_chatbot/db/document_store.py`, `src/agentic_chatbot/db/chunk_store.py`, `src/agentic_chatbot/db/memory_store.py` |
 | Callback Adapter | LangChain/LangGraph callback construction | `src/agentic_chatbot/observability/callbacks.py` |
 
@@ -231,10 +243,13 @@ So in current architecture, RAG is primarily orchestrated through agent handoffs
 
 ## Accuracy checklist
 
-- Matches current routing behavior: `BASIC` or `AGENT` via deterministic router.
+- Matches current routing behavior: `BASIC` or `AGENT` via deterministic router (+ optional LLM hybrid router).
 - Matches fallback behavior: only capability/config failures fall back to legacy agent.
-- Matches graph topology: supervisor, utility, data_analyst, rag node, parallel planner, rag workers, synthesizer.
+- Matches graph topology: supervisor, utility, data_analyst, rag node, parallel planner, rag workers, synthesizer, **evaluator**, **clarify** (9 nodes).
 - Matches dynamic agent discovery: `AgentRegistry` drives supervisor prompt and valid-response validation.
 - Matches persistence: single PostgreSQL backend for documents/chunks/memory.
 - Matches observability: callback-driven Langfuse integration (optional).
 - `data_analyst` node auto-disabled when Docker daemon is unreachable.
+- GraphRAG integration is opt-in (`GRAPHRAG_ENABLED=true`); system runs without it.
+- Contextual retrieval is opt-in (`CONTEXTUAL_RETRIEVAL_ENABLED=true`); uses `build_providers(settings).judge_llm`.
+- Evaluator grades RAG/parallel_rag outputs; passes utility and data_analyst outputs through unconditionally.

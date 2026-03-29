@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, List
 
 from langchain.tools import tool
@@ -428,33 +429,151 @@ def make_all_rag_tools(
     # ------------------------------------------------------------------ #
     #  9-11. Scratchpad tools                                              #
     # ------------------------------------------------------------------ #
+    # Resolve workspace artifacts directory for persistent scratchpad
+    _artifacts_dir = None
+    if hasattr(session, "workspace") and session.workspace is not None:
+        _ws_root = getattr(session.workspace, "root", None)
+        if _ws_root is not None:
+            _artifacts_dir = Path(_ws_root) / ".artifacts"
+
     @tool
-    def scratchpad_write(key: str, value: str) -> str:
-        """Write a key-value pair to the within-turn scratchpad.
+    def scratchpad_write(key: str, value: str, persist: bool = False) -> str:
+        """Write a key-value pair to the agent scratchpad.
 
         Use this to store intermediate findings between tool calls so you can
         build up a complete answer across multiple searches.
-        Example: scratchpad_write('doc1_clauses', '<json of clauses found>')
+
+        Args:
+            key: A descriptive key (e.g., "doc1_findings", "comparison_matrix").
+            value: The content to store.
+            persist: If True, also write to session workspace for cross-turn
+                     persistence. Use this for findings you'll need in follow-up turns.
         """
         session.scratchpad[key] = value
-        return f"Stored key '{key}' in scratchpad ({len(value)} chars)."
+        suffix = ""
+        if persist and _artifacts_dir is not None:
+            try:
+                _artifacts_dir.mkdir(parents=True, exist_ok=True)
+                (_artifacts_dir / f"{key}.md").write_text(value, encoding="utf-8")
+                suffix = " [persisted to workspace]"
+            except Exception as e:
+                suffix = f" [persist failed: {e}]"
+        return f"Stored key '{key}' in scratchpad ({len(value)} chars).{suffix}"
 
     @tool
     def scratchpad_read(key: str) -> str:
         """Read a value from the scratchpad by key.
 
-        Returns the stored value, or a message if the key is not found.
+        Checks in-memory scratchpad first, then falls back to persisted
+        workspace artifacts from previous turns.
         """
         val = session.scratchpad.get(key)
-        if val is None:
-            return f"Key '{key}' not found in scratchpad. Available keys: {list(session.scratchpad.keys())}"
-        return val
+        if val is not None:
+            return val
+
+        # Fall back to persisted artifacts
+        if _artifacts_dir is not None:
+            artifact_path = _artifacts_dir / f"{key}.md"
+            if artifact_path.exists():
+                val = artifact_path.read_text(encoding="utf-8")
+                session.scratchpad[key] = val  # cache in memory
+                return val
+
+        return f"Key '{key}' not found in scratchpad. Available keys: {list(session.scratchpad.keys())}"
 
     @tool
     def scratchpad_list() -> str:
-        """List all keys currently stored in the scratchpad."""
-        keys = list(session.scratchpad.keys())
-        return json.dumps({"keys": keys, "count": len(keys)})
+        """List all keys in the scratchpad (in-memory + persisted artifacts)."""
+        keys = set(session.scratchpad.keys())
+        if _artifacts_dir is not None and _artifacts_dir.exists():
+            for f in _artifacts_dir.glob("*.md"):
+                keys.add(f.stem)
+        keys_list = sorted(keys)
+        return json.dumps({"keys": keys_list, "count": len(keys_list)})
+
+    # ------------------------------------------------------------------ #
+    #  GraphRAG tools (conditional — only when GRAPHRAG_ENABLED=true)     #
+    # ------------------------------------------------------------------ #
+    graph_search_local_tool = None
+    graph_search_global_tool = None
+
+    if settings is not None and getattr(settings, "graphrag_enabled", False):
+        @tool
+        def graph_search_local(query: str, doc_id: str = "") -> str:
+            """Search the knowledge graph for entity-specific information.
+
+            Use LOCAL search when the user asks about specific entities:
+            "What does Company X do?", "Who is John Smith?", "What are the
+            obligations under Clause 5?", "What entities are mentioned?"
+
+            Local search fans out from matched entities to their neighbors,
+            returning entity descriptions, relationships, and supporting text.
+
+            Args:
+                query: The question to answer using entity-centric graph traversal.
+                doc_id: Optional — limit search to a specific document's graph.
+                        If empty, searches across all indexed documents.
+            """
+            from agentic_chatbot.graphrag.searcher import graph_search, list_indexed_documents  # noqa: PLC0415
+
+            if doc_id:
+                project_dir = settings.graphrag_data_dir / doc_id
+                if not (project_dir / "output").exists():
+                    return f"No GraphRAG index found for doc_id={doc_id}. The index may still be building."
+                return graph_search(query, project_dir, method="local")
+
+            # Search across all indexed documents
+            indexed = list_indexed_documents(settings.graphrag_data_dir)
+            if not indexed:
+                return "No documents have been indexed with GraphRAG yet."
+
+            results = []
+            for did in indexed[:3]:  # limit to 3 docs to avoid timeout
+                project_dir = settings.graphrag_data_dir / did
+                result = graph_search(query, project_dir, method="local")
+                if result and "failed" not in result.lower():
+                    results.append(f"[{did}]: {result}")
+
+            return "\n\n---\n\n".join(results) if results else "No results found in knowledge graph."
+
+        @tool
+        def graph_search_global(query: str, doc_id: str = "") -> str:
+            """Search the knowledge graph for holistic/thematic information.
+
+            Use GLOBAL search when the user asks broad questions:
+            "What are the main themes?", "Summarize all key relationships",
+            "What topics does this document cover?", "Give an overview"
+
+            Global search uses community summaries (hierarchical clustering)
+            to answer questions requiring understanding of the whole document.
+
+            Args:
+                query: The broad question to answer using community summaries.
+                doc_id: Optional — limit to a specific document's graph.
+            """
+            from agentic_chatbot.graphrag.searcher import graph_search, list_indexed_documents  # noqa: PLC0415
+
+            if doc_id:
+                project_dir = settings.graphrag_data_dir / doc_id
+                if not (project_dir / "output").exists():
+                    return f"No GraphRAG index found for doc_id={doc_id}. The index may still be building."
+                return graph_search(query, project_dir, method="global")
+
+            indexed = list_indexed_documents(settings.graphrag_data_dir)
+            if not indexed:
+                return "No documents have been indexed with GraphRAG yet."
+
+            results = []
+            for did in indexed[:3]:
+                project_dir = settings.graphrag_data_dir / did
+                result = graph_search(query, project_dir, method="global")
+                if result and "failed" not in result.lower():
+                    results.append(f"[{did}]: {result}")
+
+            return "\n\n---\n\n".join(results) if results else "No results found in knowledge graph."
+
+        graph_search_local_tool = graph_search_local
+        graph_search_global_tool = graph_search_global
 
     # skills search — lets the agent look up operational guidance at runtime
     skills_search = None
@@ -480,6 +599,10 @@ def make_all_rag_tools(
         scratchpad_read,
         scratchpad_list,
     ]
+    if graph_search_local_tool is not None:
+        tools.append(graph_search_local_tool)
+    if graph_search_global_tool is not None:
+        tools.append(graph_search_global_tool)
     if skills_search is not None:
         tools.append(skills_search)
     return tools

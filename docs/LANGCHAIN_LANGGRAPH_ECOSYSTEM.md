@@ -367,14 +367,17 @@ This codebase uses `.invoke()` exclusively (no async).
 ```
 START
   ↓
-supervisor ──→ rag_agent ──────────────→ supervisor
-         ├──→ utility_agent ────────────→ supervisor
-         ├──→ data_analyst ─────────────→ supervisor
+supervisor ──→ rag_agent ──────────────→ evaluator ──→ supervisor
+         ├──→ utility_agent ────────────→ evaluator ──→ supervisor
+         ├──→ data_analyst ─────────────────────────→ supervisor
+         ├──→ clarify ────────────────────────────────────────→ END
          ├──→ parallel_planner
-         │         ↓ (Send API fan-out)
-         │    [rag_worker × N] ──────────→ rag_synthesizer ──→ supervisor
+         │         ↓ (Send API fan-out; or clarify if vague)
+         │    [rag_worker × N] ──→ rag_synthesizer ──→ evaluator ──→ supervisor
          └──→ END
 ```
+
+The `evaluator` node grades RAG/utility outputs (4 criteria: relevance, evidence, completeness, accuracy). On failure, it clears `final_answer` for one retry. On the second pass, it unconditionally passes to prevent infinite loops. Data analyst outputs skip the evaluator and route directly to supervisor.
 
 ---
 

@@ -218,7 +218,12 @@ from agentic_chatbot.graph.nodes.my_agent_node import make_my_agent_node
 
 my_agent_fn = make_my_agent_node(chat_llm, settings, stores, session_proxy, callbacks=callbacks)
 graph.add_node("my_agent", my_agent_fn)
-graph.add_edge("my_agent", "supervisor")
+graph.add_edge("my_agent", "evaluator")  # route through evaluator before returning to supervisor
+```
+
+**Note:** agents that produce RAG-like text answers should route through `"evaluator"` so outputs are quality-graded. Agents that return structured data or side-effects (like `data_analyst`) route directly to `"supervisor"`:
+```python
+graph.add_edge("my_data_agent", "supervisor")  # bypass evaluator for structured output agents
 ```
 
 ### Step 8 — Add route case

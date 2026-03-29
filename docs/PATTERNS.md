@@ -18,7 +18,7 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 **What:** LLM supervisor routes to specialist nodes.
 
-**How:** `graph/builder.py` builds 7 nodes:
+**How:** `graph/builder.py` builds 9 nodes:
 
 - `supervisor`
 - `rag_agent`
@@ -27,18 +27,20 @@ This repo implements a production-oriented multi-agent document intelligence arc
 - `parallel_planner`
 - `rag_worker`
 - `rag_synthesizer`
+- `evaluator` — Generator-Evaluator pattern (see pattern #17)
+- `clarify` — turn-based clarification (see pattern #18)
 
 **Why:** keep tool surfaces and context focused per specialist.
 
 ---
 
-## 3. Parallel RAG via Send API
+## 3. Parallel RAG via Send API with enriched delegation specs
 
-**What:** fan out multiple scoped RAG tasks in parallel.
+**What:** fan out multiple scoped RAG tasks in parallel with enriched per-task context.
 
-**How:** supervisor sets `rag_sub_tasks`, planner validates, workers run `run_rag_agent()`, reducer merges into synthesizer.
+**How:** supervisor sets `rag_sub_tasks`, planner validates and enriches each task with `objective`, `output_format`, `boundary`, and `search_strategy`, workers receive the enriched spec and run `run_rag_agent()`, reducer merges into synthesizer. Vague queries (all tasks < 3 words) trigger clarification instead of fan-out.
 
-**Why:** reduce wall-clock latency for multi-document comparisons.
+**Why:** reduce wall-clock latency for multi-document comparisons; enriched specs prevent workers from duplicating searches and give clear task boundaries.
 
 ---
 
@@ -105,13 +107,13 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 ---
 
-## 10. Within-turn scratchpad memory
+## 10. Scratchpad memory (within-turn + persistent artifacts)
 
-**What:** turn-scoped key-value working memory for RAG.
+**What:** key-value working memory for RAG, with optional persistence across turns.
 
-**How:** `session.scratchpad` + scratchpad tools in `tools/rag_tools.py`.
+**How:** `session.scratchpad` (in-memory dict) + scratchpad tools in `tools/rag_tools.py`. `scratchpad_write(key, value, persist=True)` writes to `workspace/.artifacts/<key>.md` for cross-turn retention. `scratchpad_read` falls back to persisted files if the key is not in memory.
 
-**Why:** support multi-step extraction/comparison workflows.
+**Why:** support multi-step extraction/comparison workflows within a turn; persist intermediate findings (partial analysis, interim reports) across conversation turns without requiring the full memory stack.
 
 ---
 
@@ -125,13 +127,13 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 ---
 
-## 12. Structure-aware ingestion
+## 12. Structure-aware ingestion with Contextual Retrieval
 
-**What:** split docs by detected structure, not only fixed size.
+**What:** split docs by detected structure, not only fixed size; optionally prepend LLM-generated context to each chunk before embedding.
 
-**How:** `rag/structure_detector.py` + `rag/clause_splitter.py` + ingest dispatcher.
+**How:** `rag/structure_detector.py` + `rag/clause_splitter.py` + ingest dispatcher. When `CONTEXTUAL_RETRIEVAL_ENABLED=true`, `_contextualize_chunks()` calls the judge LLM to generate a 50-100 token context prefix for each chunk summarising its position in the document; the prefix is prepended before embedding.
 
-**Why:** preserve clause semantics for precise extraction/comparison tools.
+**Why:** preserve clause semantics for precise extraction/comparison tools. Contextual prefixes reduce retrieval failure rate significantly (Anthropic: ~67% reduction) by giving each embedding vector enough context to be retrieved accurately even for isolated clauses.
 
 ---
 
@@ -175,23 +177,56 @@ This repo implements a production-oriented multi-agent document intelligence arc
 
 ---
 
+## 17. Generator-Evaluator quality gate
+
+**What:** a lightweight LLM evaluation step grades every RAG response against four criteria before it is returned to the user.
+
+**How:** `graph/nodes/evaluator_node.py` runs after `rag_agent`, `utility_agent`, and `rag_synthesizer`. It grades against: relevance (does the answer address the question?), evidence (are chunk citations present?), completeness (are all parts answered?), accuracy (no hallucinated document names?). On failure, it clears `final_answer` and routes back to the supervisor for one retry (`eval_retry_count` guard prevents infinite loops). Utility/data_analyst outputs are passed through unconditionally.
+
+**Why:** catch low-quality or unsupported answers before the user sees them; inspired by Anthropic's harness design for long-running apps (separate generator and evaluator with explicit criteria and loop guard).
+
+---
+
+## 18. Turn-based clarification
+
+**What:** when a request is too vague to route safely, the system asks for more information instead of guessing.
+
+**How:** supervisor sets `next_agent="clarify"` with a `clarification_question`. The `clarify` node (`graph/nodes/clarification_node.py`) emits the question as an `AIMessage` and routes to END. On the next user turn, the answer is in conversation history and the supervisor routes normally. No checkpointer required.
+
+**Why:** prevents wasted agent calls on ambiguous queries; pairs with the parallel planner's vague-query detection (all sub-tasks < 3 words → clarify instead of fan-out).
+
+---
+
+## 19. Microsoft GraphRAG knowledge graph search (opt-in)
+
+**What:** entity extraction and Leiden community detection builds a knowledge graph over ingested documents; local and global search queries the graph for entity-level and community-level answers.
+
+**How:** at ingest time, `_trigger_graphrag_index()` (`rag/ingest.py`) runs `graphrag index` in a background daemon thread via `graphrag/indexer.py`. At query time, `graph_search_local` and `graph_search_global` tools (`tools/rag_tools.py`) call `graphrag query` via `graphrag/searcher.py`. Per-document project directories live under `GRAPHRAG_DATA_DIR`. Enabled via `GRAPHRAG_ENABLED=true` and requires the `graphrag` CLI on PATH.
+
+**Why:** extract implicit relationships between entities (people, organisations, clauses, concepts) that vector search cannot surface; community-level global search provides cross-document thematic summaries.
+
+---
+
 ## Summary table
 
 | # | Pattern | Files | Notes |
 |---|---|---|---|
 | 1 | Router | `router/router.py`, `router/llm_router.py` | deterministic BASIC/AGENT + LLM escalation |
-| 2 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` | multi-agent routing (7 nodes) |
-| 3 | Parallel RAG | `graph/nodes/rag_worker_node.py` | Send API fan-out |
+| 2 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` | multi-agent routing (9 nodes) |
+| 3 | Parallel RAG (enriched delegation) | `graph/nodes/rag_worker_node.py`, `graph/nodes/parallel_planner_node.py` | Send API fan-out with delegation specs |
 | 4 | ReAct loops | `agents/general_agent.py`, `rag/agent.py` | tool-calling loops |
 | 5 | RAG invocation modes | `graph/nodes/rag_node.py`, `tools/rag_agent_tool.py` | handoff primary, tool fallback |
-| 6 | Hybrid retrieval | `tools/rag_tools.py`, `rag/retrieval.py` | vector + keyword |
+| 6 | Hybrid retrieval (RRF) | `tools/rag_tools.py`, `rag/retrieval.py` | vector + keyword + Reciprocal Rank Fusion |
 | 7 | Relevance grading | `rag/grading.py` | fallback-only |
-| 8 | Query rewrite helper | `rag/rewrite.py` | present, currently unused |
+| 8 | Query rewrite helper | `rag/rewrite.py` | present, currently unused in active runtime |
 | 9 | Grounded synthesis | `rag/agent.py`, `rag/answer.py` | citation contract |
-| 10 | Scratchpad | `agents/session.py`, `tools/rag_tools.py` | within-turn memory |
+| 10 | Scratchpad (within-turn + persistent) | `agents/session.py`, `tools/rag_tools.py` | `persist=True` writes to `.artifacts/` |
 | 11 | Persistent memory | `db/memory_store.py`, `tools/memory_tools.py` | cross-turn memory |
-| 12 | Structured ingest | `rag/ingest.py`, `rag/structure_detector.py`, `rag/clause_splitter.py` | clause-aware chunks |
+| 12 | Structured ingest + Contextual Retrieval | `rag/ingest.py`, `rag/structure_detector.py`, `rag/clause_splitter.py` | clause-aware chunks; opt-in LLM context prefix |
 | 13 | Skills system | `rag/skills.py`, `rag/skills_loader.py`, `data/skills/*.md` | prompt externalization + hot-reload |
 | 14 | Dynamic agent registry | `agents/agent_registry.py`, `data/skills/supervisor_agent.md` | runtime agent discovery |
 | 15 | Docker sandbox | `sandbox/docker_executor.py`, `tools/data_analyst_tools.py` | isolated code execution |
 | 16 | Plan-verify-reflect | `data/skills/data_analyst_agent.md`, `graph/nodes/data_analyst_node.py` | structured data analysis |
+| 17 | Generator-Evaluator | `graph/nodes/evaluator_node.py`, `graph/builder.py` | quality gate; max 1 retry |
+| 18 | Clarification node | `graph/nodes/clarification_node.py` | turn-ending clarification |
+| 19 | GraphRAG knowledge graph | `graphrag/`, `tools/rag_tools.py` | entity/community search (opt-in) |

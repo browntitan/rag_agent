@@ -148,6 +148,23 @@ class Settings:
     workspace_dir: Path                 # env: WORKSPACE_DIR (default: data/workspaces)
     workspace_session_ttl_hours: int    # env: WORKSPACE_SESSION_TTL_HOURS (default: 24; 0=keep forever)
 
+    # --- Contextual Retrieval (opt-in) ---
+    # Prepends LLM-generated context to each chunk before embedding/indexing.
+    # ~67% retrieval failure reduction per Anthropic benchmarks.
+    # Adds cost at ingest time (~$1/M tokens with a cheap model).
+    contextual_retrieval_enabled: bool  # env: CONTEXTUAL_RETRIEVAL_ENABLED (default: False)
+
+    # --- Microsoft GraphRAG (opt-in) ---
+    # Builds a knowledge graph (entities, relationships, communities) alongside
+    # the vector store. Enables entity-centric and holistic thematic queries.
+    graphrag_enabled: bool              # env: GRAPHRAG_ENABLED (default: False)
+    graphrag_data_dir: Path             # env: GRAPHRAG_DATA_DIR (default: data/graphrag)
+    graphrag_completion_model: str      # env: GRAPHRAG_COMPLETION_MODEL (default: gpt-4.1-mini)
+    graphrag_embedding_model: str       # env: GRAPHRAG_EMBEDDING_MODEL (default: text-embedding-3-small)
+    graphrag_chunk_size: int            # env: GRAPHRAG_CHUNK_SIZE (default: 1200)
+    graphrag_chunk_overlap: int         # env: GRAPHRAG_CHUNK_OVERLAP (default: 100)
+    graphrag_index_method: str          # env: GRAPHRAG_INDEX_METHOD (default: standard)
+
 
 def _getenv(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
@@ -340,6 +357,18 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     workspace_dir = Path(_getenv("WORKSPACE_DIR", str(data_dir / "workspaces")))
     workspace_session_ttl_hours = _as_int("WORKSPACE_SESSION_TTL_HOURS", 24)
 
+    # Contextual Retrieval
+    contextual_retrieval_enabled = _as_bool("CONTEXTUAL_RETRIEVAL_ENABLED", False)
+
+    # GraphRAG
+    graphrag_enabled = _as_bool("GRAPHRAG_ENABLED", False)
+    graphrag_data_dir = Path(_getenv("GRAPHRAG_DATA_DIR", str(data_dir / "graphrag")))
+    graphrag_completion_model = str(_getenv("GRAPHRAG_COMPLETION_MODEL", "gpt-4.1-mini"))
+    graphrag_embedding_model = str(_getenv("GRAPHRAG_EMBEDDING_MODEL", "text-embedding-3-small"))
+    graphrag_chunk_size = _as_int("GRAPHRAG_CHUNK_SIZE", 1200)
+    graphrag_chunk_overlap = _as_int("GRAPHRAG_CHUNK_OVERLAP", 100)
+    graphrag_index_method = str(_getenv("GRAPHRAG_INDEX_METHOD", "standard"))
+
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
         raise ValueError(f"Unsupported DATABASE_BACKEND={database_backend!r}. Supported: postgres")
@@ -353,7 +382,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         raise ValueError(f"Unsupported PROMPTS_BACKEND={prompts_backend!r}. Supported: local, s3, azure_blob")
 
     # Ensure base local directories exist.
-    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir, workspace_dir]:
+    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir, workspace_dir, graphrag_data_dir]:
         p.mkdir(parents=True, exist_ok=True)
 
     return Settings(
@@ -449,4 +478,12 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         data_analyst_skills_path=data_analyst_skills_path,
         workspace_dir=workspace_dir,
         workspace_session_ttl_hours=workspace_session_ttl_hours,
+        contextual_retrieval_enabled=contextual_retrieval_enabled,
+        graphrag_enabled=graphrag_enabled,
+        graphrag_data_dir=graphrag_data_dir,
+        graphrag_completion_model=graphrag_completion_model,
+        graphrag_embedding_model=graphrag_embedding_model,
+        graphrag_chunk_size=graphrag_chunk_size,
+        graphrag_chunk_overlap=graphrag_chunk_overlap,
+        graphrag_index_method=graphrag_index_method,
     )

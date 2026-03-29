@@ -76,3 +76,9 @@ class AgentState(MessagesState):
     # the supervisor can route normally.
     needs_clarification: bool = False
     clarification_question: str = ""
+
+    # Evaluator loop — the evaluator node grades agent output against
+    # concrete criteria before returning to the user. On failure, it
+    # clears final_answer and lets the supervisor re-route (max 1 retry).
+    evaluation_result: str = ""  # "pass" | "fail" | ""
+    eval_retry_count: int = 0

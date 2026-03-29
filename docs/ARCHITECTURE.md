@@ -26,10 +26,11 @@ BASIC route
 AGENT route (primary)
   -> build_multi_agent_graph(...)
   -> supervisor (dynamic discovery via AgentRegistry)
-     -> rag_agent
-     -> utility_agent
-     -> data_analyst         <- NEW: pandas/Excel/CSV analysis in Docker sandbox
-     -> parallel_planner -> rag_worker x N -> rag_synthesizer
+     -> rag_agent     -> evaluator -> supervisor (retry if fail, max 1)
+     -> utility_agent -> evaluator -> supervisor
+     -> data_analyst            <- pandas/Excel/CSV analysis in Docker sandbox
+     -> parallel_planner -> rag_worker x N -> rag_synthesizer -> evaluator -> supervisor
+     -> clarify                 <- turn-based clarification (ends turn)
      -> __end__
 
 AGENT fallback (capability/config issue only)
@@ -68,7 +69,7 @@ Escalation triggers include:
 
 ### 2. Supervisor-driven multi-agent orchestration
 
-The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with seven nodes:
+The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with nine nodes:
 
 - `supervisor`
 - `rag_agent`
@@ -77,6 +78,8 @@ The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with seven nod
 - `parallel_planner`
 - `rag_worker`
 - `rag_synthesizer`
+- `evaluator` — Generator-Evaluator pattern: grades RAG output before returning; bounces back once on failure
+- `clarify` — turn-based clarification; emits a question and ends the turn
 
 The supervisor loops until it chooses `__end__` or loop safety triggers `SUPERVISOR_MAX_LOOPS`.
 
@@ -116,7 +119,7 @@ Relevant extensions/indexes:
 - `pg_trgm` (fuzzy title matching)
 - GIN index on generated `tsvector`
 
-### 6. Structure-aware ingestion
+### 6. Structure-aware ingestion with Contextual Retrieval
 
 `rag/ingest.py` classifies and splits docs using:
 
@@ -130,6 +133,15 @@ Document structure types:
 - `requirements_doc`
 - `policy_doc`
 - `contract`
+
+When `CONTEXTUAL_RETRIEVAL_ENABLED=true`, an LLM generates a 50-100 token context prefix per
+chunk before embedding — prepended to the chunk text to improve retrieval relevance. Uses
+`build_providers(settings).judge_llm`. Controlled by `contextual_retrieval_enabled` setting.
+
+Extraction engines:
+- `legacy` (default): PyPDF + PaddleOCR fallback
+- `docling`: Docling-based extraction for PDFs, DOCX, PPTX, XLSX with layout-aware Markdown output.
+  Set `EXTRACTION_ENGINE=docling`.
 
 ### 7. Skills-driven prompts
 
@@ -155,11 +167,12 @@ When Docker is unavailable, `data_analyst` is `enabled=False` and disappears fro
 
 ## Memory model
 
-### Scratchpad (within-turn)
+### Scratchpad (within-turn + persistent)
 
-- `session.scratchpad` (dict)
-- used by RAG scratchpad tools for intermediate findings
+- `session.scratchpad` (dict) — in-memory, used by RAG scratchpad tools for intermediate findings
 - optionally cleared each turn (`CLEAR_SCRATCHPAD_PER_TURN`)
+- `scratchpad_write(key, value, persist=True)` persists to `workspace/.artifacts/<key>.md` for cross-turn retention
+- `scratchpad_read` falls back to persisted artifacts if key not in memory
 
 ### Persistent memory (cross-turn)
 
@@ -206,13 +219,20 @@ Callback setup: `src/agentic_chatbot/observability/callbacks.py`
 | Router | `router/router.py` |
 | Supervisor graph | `graph/builder.py`, `graph/supervisor.py` |
 | Dynamic agent registry | `agents/agent_registry.py`, `data/skills/supervisor_agent.md` |
+| Generator-Evaluator | `graph/nodes/evaluator_node.py`, `graph/builder.py` |
+| Clarification node | `graph/nodes/clarification_node.py` |
 | Data analyst agent | `graph/nodes/data_analyst_node.py`, `tools/data_analyst_tools.py`, `sandbox/docker_executor.py` |
-| Parallel RAG | `graph/nodes/parallel_planner_node.py`, `graph/nodes/rag_worker_node.py`, `graph/nodes/rag_synthesizer_node.py` |
+| Parallel RAG (enriched delegation) | `graph/nodes/parallel_planner_node.py`, `graph/nodes/rag_worker_node.py`, `graph/nodes/rag_synthesizer_node.py` |
 | ReAct loops | `agents/general_agent.py`, `rag/agent.py` |
 | RAG tool wrapper (fallback path) | `tools/rag_agent_tool.py` |
-| Hybrid retrieval | `tools/rag_tools.py`, `rag/retrieval.py` |
+| Hybrid retrieval (RRF) | `tools/rag_tools.py`, `rag/retrieval.py` |
 | Relevance grading | `rag/grading.py` |
 | Grounded synthesis | `rag/answer.py`, `rag/agent.py` |
+| Contextual retrieval | `rag/ingest.py` (`_contextualize_chunks`) |
 | Ingestion and structure detection | `rag/ingest.py`, `rag/structure_detector.py`, `rag/clause_splitter.py` |
+| Docling extraction engine | `rag/ingest.py` (`_load_documents_docling`) |
 | OCR ingestion | `rag/ocr.py` |
+| Microsoft GraphRAG integration | `graphrag/config.py`, `graphrag/indexer.py`, `graphrag/searcher.py` |
+| Knowledge graph tools | `tools/rag_tools.py` (`graph_search_local`, `graph_search_global`) |
 | Persistent memory | `db/memory_store.py` |
+| Persistent scratchpad artifacts | `tools/rag_tools.py` (`scratchpad_write(persist=True)`) |
