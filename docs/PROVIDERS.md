@@ -164,12 +164,21 @@ PARALLEL_RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/parallel_rag_synthesis.txt
 
 ## GraphRAG LLM Config (opt-in)
 
-Microsoft GraphRAG uses its own LLM settings, separate from the main app providers. These are configured via `graphrag/config.py` (written to per-document `settings.yaml`):
+Microsoft GraphRAG uses its own LLM settings, separate from the main app providers. These are written to a per-document `settings.yaml` by `graphrag/config.py`. By default GraphRAG is wired to Ollama — no API key required.
 
 ```bash
-# GraphRAG uses LiteLLM under the hood — these must be OpenAI-compatible endpoints
-GRAPHRAG_COMPLETION_MODEL=gpt-4.1-mini     # entity extraction + community summarization
-GRAPHRAG_EMBEDDING_MODEL=text-embedding-3-small  # chunk embeddings for the graph index
+# Ollama (default — no API key needed)
+GRAPHRAG_COMPLETION_MODEL=ollama/qwen3.5:9b        # entity extraction + community summarization
+GRAPHRAG_EMBEDDING_MODEL=ollama/nomic-embed-text:latest  # chunk embeddings for the graph index
+GRAPHRAG_OLLAMA_BASE_URL=http://localhost:11434     # Ollama server address
+
+# Optional: switch to a cloud provider
+# GRAPHRAG_COMPLETION_MODEL=gpt-4.1-mini
+# GRAPHRAG_EMBEDDING_MODEL=text-embedding-3-small
+# GRAPHRAG_API_KEY=<your-openai-key>
+# GRAPHRAG_EMBEDDING_API_KEY=<your-openai-key>
 ```
 
-GraphRAG does not share the app's `LLM_PROVIDER` / `JUDGE_PROVIDER` config. It requires direct OpenAI-compatible API access (the `OPENAI_API_KEY` environment variable must be set, or LiteLLM configured with your provider). See GraphRAG docs for non-OpenAI provider configuration.
+The `generate_graphrag_settings()` function auto-detects whether each model string starts with `ollama/` and writes `api_base` + a dummy `"ollama"` API key (required by LiteLLM). For cloud models it falls back to `${GRAPHRAG_API_KEY}` / `${GRAPHRAG_EMBEDDING_API_KEY}`.
+
+GraphRAG does not share the app's `LLM_PROVIDER` / `JUDGE_PROVIDER` config. It runs `graphrag index` and `graphrag query` as CLI subprocesses — no Docker required.

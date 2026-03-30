@@ -1027,10 +1027,12 @@ Opt-in Microsoft GraphRAG integration for entity and community-level knowledge g
 **`graphrag/config.py` — `generate_graphrag_settings(settings, doc_id) -> Path`**
 
 Creates a per-document project directory under `GRAPHRAG_DATA_DIR/<doc_id>/` and writes a `settings.yaml` configuring:
-- LiteLLM completion model (`GRAPHRAG_COMPLETION_MODEL`, default `gpt-4.1-mini`)
-- LiteLLM embedding model (`GRAPHRAG_EMBEDDING_MODEL`, default `text-embedding-3-small`)
+- LiteLLM completion model (`GRAPHRAG_COMPLETION_MODEL`, default `ollama/qwen3.5:9b`)
+- LiteLLM embedding model (`GRAPHRAG_EMBEDDING_MODEL`, default `ollama/nomic-embed-text:latest`)
+- Ollama base URL (`GRAPHRAG_OLLAMA_BASE_URL`, default `http://localhost:11434`)
+- Auto-detects `ollama/` prefix: sets `api_base` and dummy `api_key = "ollama"` so LiteLLM routes correctly; falls back to `${GRAPHRAG_API_KEY}` for cloud models
 - Chunk size and overlap
-- Entity types: `PERSON, ORGANIZATION, CONCEPT, CLAUSE, REQUIREMENT, POLICY`
+- Entity types: `PERSON, ORGANIZATION, LOCATION, DATE, MONETARY_AMOUNT, LEGAL_TERM, CLAUSE, DOCUMENT`
 - LanceDB vector store
 
 **`graphrag/indexer.py` — `run_graphrag_index(project_dir, method, timeout) -> bool`**

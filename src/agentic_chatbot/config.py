@@ -157,10 +157,12 @@ class Settings:
     # --- Microsoft GraphRAG (opt-in) ---
     # Builds a knowledge graph (entities, relationships, communities) alongside
     # the vector store. Enables entity-centric and holistic thematic queries.
+    # Uses Ollama by default (no API key required).
     graphrag_enabled: bool              # env: GRAPHRAG_ENABLED (default: False)
     graphrag_data_dir: Path             # env: GRAPHRAG_DATA_DIR (default: data/graphrag)
-    graphrag_completion_model: str      # env: GRAPHRAG_COMPLETION_MODEL (default: gpt-4.1-mini)
-    graphrag_embedding_model: str       # env: GRAPHRAG_EMBEDDING_MODEL (default: text-embedding-3-small)
+    graphrag_completion_model: str      # env: GRAPHRAG_COMPLETION_MODEL (default: ollama/qwen3.5:9b)
+    graphrag_embedding_model: str       # env: GRAPHRAG_EMBEDDING_MODEL (default: ollama/nomic-embed-text:latest)
+    graphrag_ollama_base_url: str       # env: GRAPHRAG_OLLAMA_BASE_URL (default: http://localhost:11434)
     graphrag_chunk_size: int            # env: GRAPHRAG_CHUNK_SIZE (default: 1200)
     graphrag_chunk_overlap: int         # env: GRAPHRAG_CHUNK_OVERLAP (default: 100)
     graphrag_index_method: str          # env: GRAPHRAG_INDEX_METHOD (default: standard)
@@ -363,8 +365,9 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     # GraphRAG
     graphrag_enabled = _as_bool("GRAPHRAG_ENABLED", False)
     graphrag_data_dir = Path(_getenv("GRAPHRAG_DATA_DIR", str(data_dir / "graphrag")))
-    graphrag_completion_model = str(_getenv("GRAPHRAG_COMPLETION_MODEL", "gpt-4.1-mini"))
-    graphrag_embedding_model = str(_getenv("GRAPHRAG_EMBEDDING_MODEL", "text-embedding-3-small"))
+    graphrag_completion_model = str(_getenv("GRAPHRAG_COMPLETION_MODEL", "ollama/qwen3.5:9b"))
+    graphrag_embedding_model = str(_getenv("GRAPHRAG_EMBEDDING_MODEL", "ollama/nomic-embed-text:latest"))
+    graphrag_ollama_base_url = str(_getenv("GRAPHRAG_OLLAMA_BASE_URL", "http://localhost:11434"))
     graphrag_chunk_size = _as_int("GRAPHRAG_CHUNK_SIZE", 1200)
     graphrag_chunk_overlap = _as_int("GRAPHRAG_CHUNK_OVERLAP", 100)
     graphrag_index_method = str(_getenv("GRAPHRAG_INDEX_METHOD", "standard"))
@@ -483,6 +486,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         graphrag_data_dir=graphrag_data_dir,
         graphrag_completion_model=graphrag_completion_model,
         graphrag_embedding_model=graphrag_embedding_model,
+        graphrag_ollama_base_url=graphrag_ollama_base_url,
         graphrag_chunk_size=graphrag_chunk_size,
         graphrag_chunk_overlap=graphrag_chunk_overlap,
         graphrag_index_method=graphrag_index_method,

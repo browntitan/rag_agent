@@ -24,19 +24,39 @@ def generate_graphrag_settings(settings: Settings, doc_id: str) -> Path:
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "input").mkdir(exist_ok=True)
 
+    # Determine whether the configured models are Ollama (ollama/...) or a
+    # cloud provider.  Ollama models are served locally and need api_base set;
+    # they also don't require a real API key — LiteLLM accepts the dummy
+    # string "ollama" to satisfy its validation.
+    _is_ollama_completion = settings.graphrag_completion_model.startswith("ollama/")
+    _is_ollama_embedding = settings.graphrag_embedding_model.startswith("ollama/")
+
+    completion_model_cfg: Dict[str, Any] = {
+        "model": settings.graphrag_completion_model,
+        "type": "litellm",
+    }
+    if _is_ollama_completion:
+        completion_model_cfg["api_base"] = settings.graphrag_ollama_base_url
+        completion_model_cfg["api_key"] = "ollama"
+    else:
+        completion_model_cfg["api_key"] = "${GRAPHRAG_API_KEY}"
+
+    embedding_model_cfg: Dict[str, Any] = {
+        "model": settings.graphrag_embedding_model,
+        "type": "litellm",
+    }
+    if _is_ollama_embedding:
+        embedding_model_cfg["api_base"] = settings.graphrag_ollama_base_url
+        embedding_model_cfg["api_key"] = "ollama"
+    else:
+        embedding_model_cfg["api_key"] = "${GRAPHRAG_EMBEDDING_API_KEY}"
+
     config: Dict[str, Any] = {
         "completion_models": {
-            "default": {
-                "model": settings.graphrag_completion_model,
-                "type": "litellm",
-                "api_key": "${GRAPHRAG_API_KEY}",
-            }
+            "default": completion_model_cfg,
         },
         "embedding_models": {
-            "default": {
-                "model": settings.graphrag_embedding_model,
-                "api_key": "${GRAPHRAG_EMBEDDING_API_KEY}",
-            }
+            "default": embedding_model_cfg,
         },
         "input": {
             "storage": {"type": "file", "base_dir": "input"},
