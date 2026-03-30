@@ -20,12 +20,6 @@ def generate_graphrag_settings(settings: Settings, doc_id: str) -> Path:
     Returns the project directory path. The caller is responsible for
     writing the document text into ``<project_dir>/input/``.
     """
-    try:
-        import yaml  # noqa: PLC0415
-    except ImportError:
-        # PyYAML should be available; fall back to json-based yaml
-        import json as yaml  # type: ignore[no-redef]
-
     project_dir = settings.graphrag_data_dir / doc_id
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "input").mkdir(exist_ok=True)

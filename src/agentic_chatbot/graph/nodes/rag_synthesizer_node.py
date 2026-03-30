@@ -31,8 +31,10 @@ def make_rag_synthesizer_node(
 
         if not results:
             logger.warning("RAG synthesizer received no results")
+            msg = "No results were returned from document search."
             return {
-                "messages": [AIMessage(content="No results were returned from document search.")],
+                "messages": [AIMessage(content=msg)],
+                "final_answer": msg,
                 "rag_results": [{"__clear__": True}],
             }
 
@@ -42,6 +44,7 @@ def make_rag_synthesizer_node(
             rendered = render_rag_contract(contract)
             return {
                 "messages": [AIMessage(content=rendered)],
+                "final_answer": rendered,
                 "rag_results": [{"__clear__": True}],
             }
 
@@ -112,6 +115,8 @@ def make_rag_synthesizer_node(
 
         return {
             "messages": [AIMessage(content=rendered)],
+            # final_answer must be set so the evaluator node can grade it.
+            "final_answer": rendered,
             # Clear aggregated worker results so follow-up supervisor loops
             # do not accidentally re-synthesize stale worker outputs.
             "rag_results": [{"__clear__": True}],

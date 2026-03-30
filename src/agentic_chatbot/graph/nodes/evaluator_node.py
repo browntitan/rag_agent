@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 
@@ -58,25 +58,34 @@ def make_evaluator_node(
     llm: Any,
     *,
     criteria: Optional[Dict[str, str]] = None,
+    callbacks: Optional[List[Any]] = None,
 ) -> Callable:
     """Create the evaluator node function.
 
     Args:
-        llm: The LLM to use for evaluation. Can be a cheaper/faster model
-             (e.g. Haiku) since evaluation is a simpler task than generation.
+        llm: The LLM to use for evaluation. A cheaper/faster model is fine
+             since evaluation is a simpler task than generation.
         criteria: Optional custom criteria dict. Defaults to EVALUATION_CRITERIA.
+        callbacks: LangChain/Langfuse callbacks so the evaluator LLM call
+                   is traced alongside the other graph nodes.
 
     Returns:
         A callable ``evaluator_node(state) -> dict`` suitable for use as
         a LangGraph node.
     """
     eval_criteria = criteria or EVALUATION_CRITERIA
+    _callbacks = callbacks or []
 
     def evaluator_node(state: AgentState) -> Dict[str, Any]:
-        # Only evaluate RAG/parallel_rag outputs — utility and data_analyst
-        # produce deterministic/tool-driven results that don't need LLM QA.
+        # Only evaluate RAG/parallel_rag outputs.
+        # ``next_agent`` is set by the supervisor before the agent runs and is
+        # not cleared by the agent — so it reliably identifies which agent just
+        # produced output when control reaches the evaluator.
+        # "parallel_rag" covers the planner→worker→synthesizer path.
+        # "utility_agent" and "data_analyst" are intentionally excluded — their
+        # outputs are deterministic/tool-driven and don't need LLM QA grading.
         last_agent = state.get("next_agent", "")
-        if last_agent not in ("rag_agent", "parallel_rag", "rag_synthesizer", "supervisor"):
+        if last_agent not in ("rag_agent", "parallel_rag"):
             return {}
 
         final_answer = state.get("final_answer", "")
@@ -114,7 +123,14 @@ def make_evaluator_node(
         )
 
         try:
-            result = llm.invoke(eval_prompt)
+            result = llm.invoke(
+                eval_prompt,
+                config={
+                    "callbacks": _callbacks,
+                    "tags": ["evaluator"],
+                    "metadata": {"node": "evaluator", "last_agent": last_agent},
+                },
+            )
             content = result.content if hasattr(result, "content") else str(result)
 
             # Parse JSON from the response

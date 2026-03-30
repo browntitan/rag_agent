@@ -6,16 +6,20 @@ parallel fan-out via the Send API for multi-document comparison tasks.
 
 Graph topology::
 
-    START → supervisor ──→ rag_agent ──→ evaluator ──→ supervisor (loop)
+    START → supervisor ──→ rag_agent ──→ evaluator ──→ supervisor (loop; max 1 retry)
                      ├──→ utility_agent ──→ evaluator ──→ supervisor (loop)
-                     ├──→ data_analyst ──→ evaluator ──→ supervisor (loop)
+                     ├──→ data_analyst ──────────────→ supervisor (bypasses evaluator)
                      ├──→ parallel_planner ──→ [rag_worker × N] ──→ rag_synthesizer ──→ evaluator ──→ supervisor
                      ├──→ clarify ──→ END
                      └──→ END
 
-The evaluator grades agent output against concrete criteria (relevance,
-evidence, completeness, accuracy). On failure it clears final_answer and
-lets the supervisor re-route — max 1 retry to prevent infinite loops.
+The evaluator grades RAG/parallel_rag agent output against concrete criteria
+(relevance, evidence, completeness, accuracy). On failure it clears
+final_answer and lets the supervisor re-route — max 1 retry to prevent
+infinite loops.
+
+data_analyst is excluded from evaluation: its outputs are code-execution
+results rather than LLM text, so grading with LLM criteria is not useful.
 """
 from __future__ import annotations
 
@@ -129,9 +133,10 @@ def build_multi_agent_graph(
 
     clarification_fn = make_clarification_node()
 
-    # Evaluator uses a cheaper LLM (judge_llm) to grade agent output
-    # against concrete criteria before returning to the user.
-    evaluator_fn = make_evaluator_node(judge_llm)
+    # Evaluator uses judge_llm (cheaper) to grade RAG output against concrete
+    # criteria. Callbacks are passed so the grading LLM call appears in
+    # Langfuse traces alongside the other graph nodes.
+    evaluator_fn = make_evaluator_node(judge_llm, callbacks=callbacks)
 
     # ── Build the graph ────────────────────────────────────────────────
 
@@ -192,22 +197,22 @@ def build_multi_agent_graph(
         conditional_edges_map,
     )
 
-    # Agent → evaluator → supervisor (evaluator checks RAG output quality)
-    # Utility and data_analyst bypass evaluation (deterministic/tool-driven).
+    # RAG agents → evaluator → supervisor (evaluator grades output quality)
     graph.add_edge("rag_agent", "evaluator")
     graph.add_edge("utility_agent", "evaluator")
 
+    # data_analyst bypasses the evaluator and returns directly to the supervisor.
+    # Its outputs are code-execution results, not LLM prose, so LLM quality
+    # grading is not applicable.
     if data_analyst_fn is not None:
-        graph.add_edge("data_analyst", "evaluator")
+        graph.add_edge("data_analyst", "supervisor")
 
-    # Evaluator routes: pass → END or fail → supervisor for retry
-    def route_from_evaluator(state: AgentState) -> str:
-        eval_result = state.get("evaluation_result", "")
-        if eval_result == "fail":
-            eval_count = state.get("eval_retry_count", 0)
-            if eval_count <= 1:
-                return "supervisor"
-        return "supervisor"  # always go back to supervisor for loop control
+    # Evaluator always routes back to supervisor.
+    # On pass:  final_answer is still set; supervisor will route to __end__.
+    # On fail:  evaluator cleared final_answer; supervisor re-routes to agent.
+    # This keeps loop-limit logic in one place (the supervisor's max_loops guard).
+    def route_from_evaluator(state: AgentState) -> str:  # noqa: ARG001
+        return "supervisor"
 
     graph.add_conditional_edges(
         "evaluator",

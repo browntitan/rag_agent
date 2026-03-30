@@ -96,8 +96,10 @@ def make_rag_agent_node(
 
         query = _extract_latest_query(state.get("messages", []))
         if not query:
+            msg = "No query found to search for."
             return {
-                "messages": [AIMessage(content="No query found to search for.")],
+                "messages": [AIMessage(content=msg)],
+                "final_answer": msg,
             }
 
         # Build a fresh proxy from state (captures latest scratchpad) and
@@ -142,8 +144,11 @@ def make_rag_agent_node(
 
         rendered = render_rag_contract(contract)
 
+        # final_answer must be set so the evaluator node can grade it.
+        # Without it the evaluator skips evaluation (empty-answer guard).
         return {
             "messages": [AIMessage(content=rendered)],
+            "final_answer": rendered,
             "scratchpad": session_proxy.scratchpad,
         }
 
