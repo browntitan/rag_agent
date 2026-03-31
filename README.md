@@ -92,6 +92,8 @@ Storage:
    tables: documents, chunks, memory
 ```
 
+The evaluator grades RAG answers against four criteria (relevance, evidence, completeness, accuracy). On failure it clears `final_answer` and allows the supervisor one retry. `data_analyst` bypasses the evaluator — its outputs are code-execution results, not LLM prose.
+
 Detailed C4 diagrams (including Level 3 runtime components) are in
 [`docs/C4_ARCHITECTURE.md`](docs/C4_ARCHITECTURE.md#c4-level-3-component-view-application-runtime-container).
 
@@ -146,7 +148,15 @@ docker compose exec ollama ollama pull nomic-embed-text
 docker compose exec ollama ollama pull qwen3:8b
 ```
 
-The app container now starts the OpenAI-compatible gateway on boot (`http://localhost:8000`). You can still run CLI commands inside the app container:
+The app container starts the OpenAI-compatible gateway on boot (`http://localhost:8000`). The React frontend is **not** containerised — run it locally:
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:3000
+```
+
+> **Port note:** Langfuse web UI also defaults to port 3000. If running both, set `LANGFUSE_WEB_PORT=3001` in `.env` before starting the observability stack.
+
+You can still run CLI commands inside the app container:
 
 ```bash
 # schema migration + KB indexing
@@ -319,9 +329,10 @@ python run.py serve-api --host 0.0.0.0 --port 8000
 
 Endpoint summary:
 
-- `GET http://localhost:8000/v1/models`
-- `POST http://localhost:8000/v1/chat/completions`
-- `POST http://localhost:8000/v1/ingest/documents`
+- `GET  http://localhost:8000/v1/models`
+- `POST http://localhost:8000/v1/chat/completions` — streaming (`stream: true`) emits named SSE progress events before text
+- `POST http://localhost:8000/v1/upload` — multipart file upload (PDF, DOCX, TXT, CSV, XLSX, MD); ingests and copies to session workspace
+- `POST http://localhost:8000/v1/ingest/documents` — ingest from server-side file paths
 
 The gateway is designed so OpenWebUI and AI SDK can target it as an OpenAI-compatible backend by changing base URL and credentials.
 
@@ -570,27 +581,42 @@ docker compose exec app python run.py init-kb
 
 The app entrypoint can also auto-run migrations (`APP_AUTO_MIGRATE=true`), but running the explicit commands above is the most reliable first-run check.
 
-### 7.2 Backend Bootstrap Checklist (End-to-End)
+### 7.2 Full-Stack Bootstrap Checklist (End-to-End)
 
 Run these in order on a fresh setup:
 
 ```bash
-# 1) start PostgreSQL (pgvector image) and Ollama/Azure config
-# 2) install deps and create .env
+# 1) Start PostgreSQL + app (or configure local Python env + DB)
+docker compose up -d --build          # app API on :8000, pgvector on :5432
 
-python run.py doctor
-python run.py migrate
-python run.py init-kb
+# -- OR: local Python env --
+cp .env.example .env                  # edit LLM_PROVIDER, PG_DSN, model names
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python run.py doctor                  # verify providers + DB connectivity
+python run.py migrate                 # create DB tables + indexes
+python run.py init-kb                 # index the 18 built-in KB documents
 
-# sanity check: single question
+# 2) Sanity-check the backend CLI
 python run.py ask -q "What authentication methods does the API support?"
 
-# interactive backend
-python run.py chat
+# 3) Start the backend API (if not already running via Docker)
+python run.py serve-api --port 8000
 
-# curated demo suite
-python run.py demo --list-scenarios
-python run.py demo --scenario all --max-turns 2
+# 4) Start the React frontend (in a second terminal)
+cd frontend
+npm install
+npm run dev                           # http://localhost:3000
+
+# The frontend proxies all /v1/* requests to http://localhost:8000
+# Open http://localhost:3000 in your browser — start chatting!
+```
+
+**If using Langfuse alongside the frontend** (both default to port 3000):
+```bash
+# Set Langfuse to a different port before starting it
+LANGFUSE_WEB_PORT=3001 docker compose --profile observability up -d
+# Frontend stays on :3000, Langfuse UI on :3001
 ```
 
 ---
@@ -840,9 +866,11 @@ python run.py serve-api [--host 0.0.0.0] [--port 8000] [--reload]
 
 This starts a FastAPI server exposing:
 
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /v1/ingest/documents`
+- `GET  /v1/models`
+- `POST /v1/chat/completions` — supports `stream: true`; emits named `event: progress` SSE events in real time
+- `POST /v1/upload` — multipart file upload (ingests into KB + workspace)
+- `POST /v1/ingest/documents` — ingest from server-side paths
+- `GET  /health/live` and `GET /health/ready`
 
 ---
 
@@ -1214,30 +1242,51 @@ Access the Langfuse dashboard at `http://localhost:3000` (if running locally).
 
 ### 12.9 React Frontend
 
-A lightweight chat frontend lives in `frontend/`. It connects to the existing OpenAI-compatible API gateway and requires no additional backend changes.
+A lightweight chat frontend lives in `frontend/`. It connects to the existing API gateway and requires no additional backend changes.
 
 **Stack:** Vite 5 + React 18 + TypeScript. No external UI library — plain CSS.
 
 **Features:**
-- Streaming chat via Server-Sent Events (`/v1/chat/completions?stream=true`)
+- Real-time agent progress panel (collapses after response): shows which graph node is currently running (supervisor, rag_agent, evaluator, etc.) with a pulsing live indicator — similar to Claude's thinking display
+- Tool call inspector: each tool call (search_document, extract_clauses, etc.) is expandable, showing the full input JSON and output/error + execution duration
+- Streaming chat via Server-Sent Events — backend emits named `event: progress` SSE events while the graph runs, then yields text content chunks
 - File upload via multipart POST to `/v1/upload` (PDF, DOCX, TXT, CSV, XLSX, MD)
-- New chat button (generates a fresh UUID conversation ID)
+- New chat button (fresh UUID conversation ID, persisted in localStorage)
 - Stop generation button (AbortController)
 - Typing indicator during streaming
 
+**Port note:** The Vite dev server runs on port `3000`. If you are also running the Langfuse observability stack (which also defaults to port `3000`), change the Langfuse port first:
+```env
+# in .env, before starting compose --profile observability
+LANGFUSE_WEB_PORT=3001
+```
+Or start the frontend on a different port:
+```bash
+npm run dev -- --port 5173
+```
+The backend CORS middleware allows both `http://localhost:3000` and `http://localhost:5173`.
+
 **Setup:**
 ```bash
+# 1. Make sure the backend is running first
+python run.py serve-api --port 8000
+# or: docker compose up -d app
+
+# 2. Start the frontend
 cd frontend
 npm install
-npm run dev      # starts on http://localhost:3000, proxies /v1 to http://localhost:8000
+npm run dev      # http://localhost:3000 → proxies /v1/* to http://localhost:8000
 ```
 
 **Architecture:**
-- `src/api/client.ts` — `streamChatCompletion()` async generator parses raw SSE; `uploadFiles()` handles multipart
-- `src/hooks/useChat.ts` — chat state: messages, isLoading, conversationId, sendMessage, stopGeneration
+- `src/api/client.ts` — `streamChatCompletion()` async generator parses both named (`event: progress`) and unnamed SSE frames, yielding a discriminated `StreamEvent` union (`content | progress | done`); `uploadFiles()` handles multipart
+- `src/hooks/useChat.ts` — chat state: messages (with `steps: ProgressEvent[]` per message), isLoading, conversationId, sendMessage, stopGeneration; accumulates progress events into `message.steps` as they arrive
 - `src/hooks/useFileUpload.ts` — upload state: isUploading, uploadedFiles, lastError
-- `src/components/` — ChatWindow, MessageBubble, ChatInput, FileUpload (each with co-located CSS)
+- `src/components/AgentStatusPanel` — collapsible progress panel rendered inside each assistant bubble; shows live node label during streaming, tool-call summary after; each tool call row is expandable with input/output
+- `src/components/` — ChatWindow, MessageBubble (renders AgentStatusPanel), ChatInput, FileUpload (each with co-located CSS)
 - `vite.config.ts` — dev server proxy so the frontend talks to the backend without CORS issues
+
+**Backend progress callback:** `src/agentic_chatbot/api/progress_callback.py` is a `BaseCallbackHandler` that captures LangGraph node transitions and tool calls to a thread-safe queue. `_stream_with_progress()` in `main.py` runs `process_turn()` in a background thread, drains the queue as named SSE events, then yields the final text content.
 
 The frontend speaks the exact same OpenAI-compatible protocol as any other client; swapping in a different backend is a one-line URL change in `vite.config.ts`.
 
@@ -1369,8 +1418,9 @@ You> What documents do you have access to?
 | Limitation | Detail | Workaround |
 |---|---|---|
 | **Embedding model switch requires reindex** | Changing embed model dimensions requires rebuilding indexed vectors | Set `EMBEDDING_DIM` and run `python run.py migrate-embedding-dim --yes` |
-| **No streaming output** | Full response is generated before display. Both agents use `graph.invoke()` (blocking). Streaming is architecturally possible now that both agents use LangGraph — replace with `graph.astream(stream_mode="messages")` | Use smaller models or increase `OLLAMA_NUM_PREDICT` until streaming is wired |
-| **Single-process, synchronous** | One request at a time; no async concurrency | Wrap in a web server (FastAPI + asyncio) for concurrent users |
+| **Streaming is simulated (post-process)** | `process_turn()` blocks until the full answer is ready; the backend then chunked-streams the completed text. Real token-by-token streaming would require `graph.astream(stream_mode="messages")`. Progress events fire in real time via the ProgressCallback. | Use smaller models or `OLLAMA_NUM_PREDICT=1024` to reduce latency |
+| **Single-process, synchronous** | One request at a time per process; no async concurrency | Run multiple uvicorn workers: `uvicorn agentic_chatbot.api.main:app --workers 4` |
+| **Frontend port conflict with Langfuse** | Both Vite dev server and Langfuse web default to port 3000 | Set `LANGFUSE_WEB_PORT=3001` in `.env` before starting the observability stack, or run frontend on `npm run dev -- --port 5173` |
 | **OCR quality depends on scan quality** | Very small text, rotated scans, or low-resolution images produce poor OCR | Increase `dpi` in `rag/ocr.py:_render_and_ocr_page` (default 200, try 300) |
 | **PaddleOCR first-run download** | ~200 MB model download on first OCR use | Pre-pull in your Docker image or CI environment |
 | **DOCX images not extracted** | Images embedded inside `.docx` files are ignored | Export to PDF first |
@@ -1495,6 +1545,31 @@ You changed embedding models without updating `EMBEDDING_DIM` or the schema. Fix
 
 ---
 
+### Frontend shows blank page or "Failed to fetch"
+
+1. Make sure the backend is running on port 8000: `curl http://localhost:8000/health/live`
+2. Check the Vite proxy is configured correctly in `frontend/vite.config.ts` — it should proxy `/v1` → `http://localhost:8000`
+3. Confirm `npm install` has been run inside `frontend/`
+4. If you see a CORS error in the browser console, check `APP_API_PORT` matches the actual backend port
+
+### Frontend and Langfuse both on port 3000
+
+```
+Error: listen EADDRINUSE: address already in use :::3000
+```
+
+Start Langfuse on a different port:
+```bash
+LANGFUSE_WEB_PORT=3001 docker compose --profile observability up -d langfuse-web langfuse-worker langfuse-postgres langfuse-redis langfuse-clickhouse langfuse-minio langfuse-minio-create-bucket
+```
+
+Or run the frontend on a different port:
+```bash
+cd frontend && npm run dev -- --port 5173
+```
+
+---
+
 ### `No content extracted from <file> — skipping`
 
 The loader returned no text (empty file, corrupted PDF, or unsupported format). Check:
@@ -1591,13 +1666,25 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `DEFAULT_CONVERSATION_ID` | `local-session` | No | Default conversation scope for CLI/demo/local runs |
 | `GATEWAY_MODEL_ID` | `enterprise-agent` | No | Public model ID exposed by `/v1/models` |
 | `CLEAR_SCRATCHPAD_PER_TURN` | `true` | No | Wipe scratchpad after each turn |
+| `WORKSPACE_DIR` | `./data/workspaces` | No | Root directory for per-session file workspaces used by the data analyst sandbox |
+| `WORKSPACE_SESSION_TTL_HOURS` | `24` | No | Hours before idle workspace directories are eligible for cleanup; `0` = keep forever |
+| `LLM_ROUTER_ENABLED` | `true` | No | Enable the LLM hybrid router; set `false` to use the deterministic heuristic router only |
+| `LLM_ROUTER_CONFIDENCE_THRESHOLD` | `0.70` | No | Below this confidence the LLM router is consulted; above it the heuristic decision stands |
+| `TAVILY_API_KEY` | — | No | Tavily API key for `web_search_fallback` tool (optional; requires `WEB_SEARCH_ENABLED=true`) |
+| `WEB_SEARCH_ENABLED` | `false` | No | Enable the web search fallback tool in the RAG agent |
+| `HTTP2_ENABLED` | `true` | No | Use HTTP/2 for provider API requests (disable if your network blocks it) |
+| `SSL_VERIFY` | `true` | No | Verify SSL certificates; set `false` behind proxies that intercept TLS |
+| `SSL_CERT_FILE` | — | No | Path to a custom CA bundle for corporate TLS interception |
+| `TIKTOKEN_ENABLED` | `true` | No | Use tiktoken for token counting; set `false` if tiktoken downloads are blocked by SSL policy |
+| `TIKTOKEN_CACHE_DIR` | — | No | Pre-downloaded tiktoken model directory (avoids runtime downloads) |
 | `CONTEXTUAL_RETRIEVAL_ENABLED` | `false` | No | Prepend LLM-generated context to each chunk at ingest time (improves retrieval; uses judge LLM) |
 | `EXTRACTION_ENGINE` | `legacy` | No | Document extraction engine: `legacy` (PyPDF+PaddleOCR) or `docling` (layout-aware, handles PDFs/DOCX/XLSX/PPTX) |
 | `DOCLING_OCR_ENABLED` | `true` | No | Enable OCR within the Docling pipeline (only used when `EXTRACTION_ENGINE=docling`) |
 | `GRAPHRAG_ENABLED` | `false` | No | Enable Microsoft GraphRAG knowledge graph indexing at ingest time and graph search tools |
 | `GRAPHRAG_DATA_DIR` | `data/graphrag` | No | Directory where per-document GraphRAG project folders are stored |
-| `GRAPHRAG_COMPLETION_MODEL` | `gpt-4.1-mini` | No | LLM used for GraphRAG entity extraction and community summarization |
-| `GRAPHRAG_EMBEDDING_MODEL` | `text-embedding-3-small` | No | Embedding model used by GraphRAG (OpenAI-compatible) |
+| `GRAPHRAG_COMPLETION_MODEL` | `ollama/qwen3.5:9b` | No | LLM used for GraphRAG entity extraction and community summarization. Prefix `ollama/` auto-configures `api_base`; use a plain model name (e.g. `gpt-4.1-mini`) for cloud providers with `GRAPHRAG_API_KEY` |
+| `GRAPHRAG_EMBEDDING_MODEL` | `ollama/nomic-embed-text:latest` | No | Embedding model used by GraphRAG. Same `ollama/` prefix convention applies |
+| `GRAPHRAG_OLLAMA_BASE_URL` | `http://localhost:11434` | No | Ollama server URL written into the GraphRAG `settings.yaml` when an `ollama/` model is configured |
 | `GRAPHRAG_CHUNK_SIZE` | `1200` | No | Token chunk size for GraphRAG indexing |
 | `GRAPHRAG_CHUNK_OVERLAP` | `100` | No | Token overlap between GraphRAG chunks |
 | `GRAPHRAG_INDEX_METHOD` | `standard` | No | GraphRAG index method: `standard` or `fast` |
@@ -1629,10 +1716,37 @@ langchain_agentic_chatbot_v2/
 ├── run.py                         # Entry point — adds src/ to PYTHONPATH
 ├── requirements.txt               # Python dependencies
 ├── .env.example                   # Template for environment variables
-├── Dockerfile                     # App container image
-├── docker-compose.yml             # Full local stack: app + db + optional ollama/langfuse
+├── Dockerfile                     # App container image (backend only)
+├── docker-compose.yml             # Full local stack: app + pgvector + optional ollama/langfuse
 ├── docker/
 │   └── entrypoint.sh              # App startup (wait for DB + optional auto migrate/init)
+│
+├── frontend/                      # React chat UI (Vite 5 + React 18 + TypeScript)
+│   ├── package.json               # Dependencies: react, react-dom, uuid
+│   ├── vite.config.ts             # Dev server on :3000, proxies /v1/* → backend :8000
+│   ├── tsconfig.json
+│   ├── index.html
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx                # Root layout: header, ChatWindow, ChatInput
+│       ├── App.css
+│       ├── types.ts               # Message, ProgressEvent, UploadResult interfaces
+│       ├── api/
+│       │   └── client.ts          # streamChatCompletion() (named SSE), uploadFiles(), checkHealth()
+│       ├── hooks/
+│       │   ├── useChat.ts         # Chat state + streaming + progress event accumulation
+│       │   └── useFileUpload.ts   # Upload state + API call
+│       └── components/
+│           ├── AgentStatusPanel.tsx  # Live progress display + tool call inspector
+│           ├── AgentStatusPanel.css
+│           ├── ChatWindow.tsx
+│           ├── ChatWindow.css
+│           ├── MessageBubble.tsx  # Renders AgentStatusPanel above assistant messages
+│           ├── MessageBubble.css
+│           ├── ChatInput.tsx
+│           ├── ChatInput.css
+│           ├── FileUpload.tsx
+│           └── FileUpload.css
 │
 ├── data/
 │   ├── kb/                        # Built-in knowledge base documents
@@ -1694,7 +1808,8 @@ langchain_agentic_chatbot_v2/
 └── src/agentic_chatbot/
     ├── api/
     │   ├── __init__.py            # FastAPI gateway package export
-    │   └── main.py                # OpenAI-compatible /v1 endpoints (no in-app auth)
+    │   ├── main.py                # OpenAI-compatible /v1 endpoints + CORS + /v1/upload
+    │   └── progress_callback.py   # LangChain callback → thread-safe queue → named SSE events
     ├── cli.py                     # Typer CLI (ask, chat, demo, migrate, init-kb, reset-indexes, serve-api)
     ├── config.py                  # Settings dataclass + load_settings() from env
     ├── context.py                 # RequestContext + local default context resolver
