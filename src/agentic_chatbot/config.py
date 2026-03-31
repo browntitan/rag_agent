@@ -219,14 +219,14 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     skills_backend = str(_getenv("SKILLS_BACKEND", "local")).lower()
     prompts_backend = str(_getenv("PROMPTS_BACKEND", "local")).lower()
 
-    llm_provider = str(_getenv("LLM_PROVIDER", "azure")).lower()
+    llm_provider = str(_getenv("LLM_PROVIDER", "ollama")).lower()
     embeddings_provider = str(_getenv("EMBEDDINGS_PROVIDER", llm_provider)).lower()
     judge_provider = str(_getenv("JUDGE_PROVIDER", llm_provider)).lower()
 
     # Ollama
     ollama_base_url = str(_getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "qwen3:8b"))
-    ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"))
+    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "qwen3.5:9b"))
+    ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest"))
     ollama_judge_model = str(_getenv("OLLAMA_JUDGE_MODEL", ollama_chat_model))
     ollama_temperature = _as_float("OLLAMA_TEMPERATURE", 0.2)
     ollama_num_predict = _as_int("OLLAMA_NUM_PREDICT", 2048)

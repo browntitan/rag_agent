@@ -145,7 +145,7 @@ Ollama models are never pulled/created automatically during image build or conta
 
 ```bash
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose exec ollama ollama pull qwen3:8b
+docker compose exec ollama ollama pull qwen3.5:9b
 ```
 
 The app container starts the OpenAI-compatible gateway on boot (`http://localhost:8000`). The React frontend is **not** containerised — run it locally:
@@ -232,7 +232,7 @@ Pull the required models inside the container:
 docker exec ollama ollama pull nomic-embed-text
 
 # Chat model (choose one)
-docker exec ollama ollama pull qwen3:8b          # project default / fastest startup
+docker exec ollama ollama pull qwen3.5:9b          # project default / fastest startup
 docker exec ollama ollama pull qwen2.5:14b       # stronger quality
 docker exec ollama ollama pull llama3.1:8b       # alternative
 docker exec ollama ollama pull llama3.1:70b      # high quality, high resource usage
@@ -504,9 +504,9 @@ JUDGE_PROVIDER=ollama
 EMBEDDINGS_PROVIDER=ollama
 
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=qwen3:8b
-OLLAMA_JUDGE_MODEL=qwen3:8b
-OLLAMA_EMBED_MODEL=nomic-embed-text
+OLLAMA_CHAT_MODEL=qwen3.5:9b
+OLLAMA_JUDGE_MODEL=qwen3.5:9b
+OLLAMA_EMBED_MODEL=nomic-embed-text:latest
 OLLAMA_NUM_PREDICT=2048
 DEMO_OLLAMA_NUM_PREDICT=2048
 
@@ -1493,13 +1493,13 @@ docker compose exec app python run.py doctor
 ### Ollama model not found
 
 ```
-OllamaError: model 'qwen3:8b' not found
+OllamaError: model 'qwen3.5:9b' not found
 ```
 
 Pull the model:
 
 ```bash
-docker compose exec ollama ollama pull qwen3:8b
+docker compose exec ollama ollama pull qwen3.5:9b
 ```
 
 Or set `OLLAMA_CHAT_MODEL` in `.env` to a model you have pulled.
@@ -1587,13 +1587,13 @@ The loader returned no text (empty file, corrupted PDF, or unsupported format). 
 | `OBJECT_STORE_BACKEND` | `local` | No | Object/doc source backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `SKILLS_BACKEND` | `local` | No | Skills prompt backend (`local`, `s3`, `azure_blob`; local implemented) |
 | `PROMPTS_BACKEND` | `local` | No | Prompt-template backend (`local`, `s3`, `azure_blob`; local implemented) |
-| `LLM_PROVIDER` | `azure` | Yes | `ollama`, `azure`, or `nvidia` |
+| `LLM_PROVIDER` | `ollama` | Yes | `ollama`, `azure`, or `nvidia` |
 | `JUDGE_PROVIDER` | same as `LLM_PROVIDER` | No | Provider used for grading/judge LLM |
 | `EMBEDDINGS_PROVIDER` | same as `LLM_PROVIDER` | No | `ollama` or `azure` (set explicitly when `LLM_PROVIDER=nvidia`) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | If Ollama | Ollama server URL |
-| `OLLAMA_CHAT_MODEL` | `qwen3:8b` | If Ollama | Chat model name |
+| `OLLAMA_CHAT_MODEL` | `qwen3.5:9b` | If Ollama | Chat model name |
 | `OLLAMA_JUDGE_MODEL` | same as `OLLAMA_CHAT_MODEL` | No | Judge model name for Ollama |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | If Ollama | Embedding model name |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text:latest` | If Ollama | Embedding model name |
 | `OLLAMA_TEMPERATURE` | `0.2` | No | Generation temperature |
 | `OLLAMA_NUM_PREDICT` | `2048` | No | Max output tokens |
 | `DEMO_OLLAMA_NUM_PREDICT` | `2048` | No | Demo-only max output tokens override (`python run.py demo`) |
