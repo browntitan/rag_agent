@@ -67,3 +67,16 @@
   0%, 80%, 100% { transform: scale(0); }
   40% { transform: scale(1); }
 }
+
+/* Allow agent status panel to extend to bubble edges */
+.message-bubble--assistant .agent-status-panel {
+  margin: -10px -14px 10px -14px;
+  border-radius: 10px 10px 0 0;
+  border: none;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f0f4ff;
+}
+
+.message-bubble--assistant .agent-status-waiting {
+  border-radius: 10px 10px 0 0;
+}

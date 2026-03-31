@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
+import threading
 import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+from agentic_chatbot.api.progress_callback import ProgressCallback
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -223,6 +227,73 @@ def _stream_chat_chunks(model: str, text: str) -> Iterable[str]:
     yield "data: [DONE]\n\n"
 
 
+def _stream_with_progress(
+    model: str,
+    session: Any,
+    user_text: str,
+    bot: Any,
+    force_agent: bool,
+    prompt_tokens: int,
+) -> Iterable[str]:
+    """SSE generator that emits real-time progress events then text content.
+
+    Runs process_turn() in a background thread. While it runs, reads typed
+    progress events from the ProgressCallback queue and yields them as named
+    SSE events. After completion yields the text content as chat.completion.chunk
+    events.
+
+    Named SSE event format:
+        event: progress
+        data: {"type": "agent_start", "node": "rag_agent", ...}
+
+    Content chunks use the standard OpenAI format (no event: prefix):
+        data: {"choices": [{"delta": {"content": "..."}}]}
+    """
+    progress_cb = ProgressCallback()
+    result_holder: Dict[str, Any] = {}
+    exc_holder: Dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            answer = bot.process_turn(
+                session,
+                user_text=user_text,
+                upload_paths=[],
+                force_agent=force_agent,
+                extra_callbacks=[progress_cb],
+            )
+            result_holder["answer"] = answer
+        except Exception as exc:
+            exc_holder["error"] = exc
+        finally:
+            progress_cb.mark_done()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # Stream progress events while process_turn is running
+    while True:
+        try:
+            event = progress_cb.events.get(timeout=30)  # 30s per-event timeout
+        except queue.Empty:
+            # Safety valve — shouldn't happen in practice
+            break
+        if event is None:  # sentinel: processing complete
+            break
+        yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    thread.join(timeout=5)
+
+    # Check for errors
+    if exc_holder.get("error"):
+        err_text = f"Error: {str(exc_holder['error'])[:200]}"
+        yield from _stream_chat_chunks(model, err_text)
+        return
+
+    answer = result_holder.get("answer", "")
+    yield from _stream_chat_chunks(model, answer)
+
+
 def get_request_context(
     runtime: Runtime,
     conversation_id: Optional[str],
@@ -305,18 +376,25 @@ def chat_completions(
     session = ChatSession.from_context(ctx, messages=history)
 
     force_agent = bool(request.metadata.get("force_agent", False))
-    answer = runtime.bot.process_turn(session, user_text=user_text, upload_paths=[], force_agent=force_agent)
 
     prompt_text = "\n".join(_coerce_content(m.content) for m in request.messages)
     prompt_tokens = _estimate_tokens(prompt_text)
 
     if request.stream:
         return StreamingResponse(
-            _stream_chat_chunks(request.model, answer),
+            _stream_with_progress(
+                request.model,
+                session,
+                user_text,
+                runtime.bot,
+                force_agent=force_agent,
+                prompt_tokens=prompt_tokens,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
+    answer = runtime.bot.process_turn(session, user_text=user_text, upload_paths=[], force_agent=force_agent)
     payload = _build_openai_completion_payload(request.model, answer, prompt_tokens)
     return JSONResponse(payload)
 

@@ -4,6 +4,7 @@ export interface Message {
   content: string
   timestamp: number
   isStreaming?: boolean
+  steps?: ProgressEvent[]   // agent steps accumulated during streaming
 }
 
 export interface UploadResult {
@@ -14,4 +15,26 @@ export interface UploadResult {
   filenames: string[]
   errors: string[]
   workspace_copies?: string[]
+}
+
+export type ProgressEventType =
+  | 'agent_start'
+  | 'tool_call'
+  | 'tool_result'
+  | 'tool_error'
+
+export interface ProgressEvent {
+  type: ProgressEventType
+  id?: string
+  // agent_start fields
+  node?: string
+  label?: string
+  // tool_call fields
+  tool?: string
+  input?: unknown
+  // tool_result / tool_error fields
+  output?: unknown
+  error?: string
+  duration_ms?: number
+  timestamp: number
 }

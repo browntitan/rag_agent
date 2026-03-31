@@ -260,6 +260,7 @@ class ChatbotApp:
         user_text: str,
         upload_paths: Optional[List[Path]] = None,
         force_agent: bool = False,
+        extra_callbacks: Optional[List[Any]] = None,
     ) -> str:
         """Process one user turn. Optionally ingest uploads first."""
 
@@ -317,6 +318,8 @@ class ChatbotApp:
             trace_name="chat_turn",
             metadata=meta,
         )
+        if extra_callbacks:
+            callbacks = list(callbacks) + list(extra_callbacks)
 
         if decision.route == "BASIC":
             text = run_basic_chat(
