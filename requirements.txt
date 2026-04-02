@@ -17,6 +17,11 @@ pypdf>=4.0.0
 python-docx>=1.1.0
 rapidfuzz>=3.6.0
 
+# Docling — advanced document extraction engine (IBM, MIT license)
+# Handles PDF, DOCX, PPTX, XLSX, images; layout-aware; table extraction; clean Markdown output
+# Install separately if not needed: pip install docling
+docling>=2.0.0
+
 # OCR support (optional — CPU; swap paddlepaddle → paddlepaddle-gpu for CUDA)
 paddlepaddle>=2.6.0
 paddleocr>=2.7.0

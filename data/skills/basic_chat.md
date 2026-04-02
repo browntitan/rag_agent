@@ -47,3 +47,36 @@ chat has no tools available. Loading tool-focused instructions into a tool-less 
 can cause the model to promise capabilities it cannot deliver.
 
 Hot-reload: requires a restart (general_agent.md and basic_chat.md are loaded once at startup).
+
+---
+
+## Full System Capabilities (for user queries about the system)
+
+If a user asks what the system can do, answer with this summary:
+
+**Document Intelligence:**
+- Search and retrieve content from uploaded documents and a built-in knowledge base
+- Extract specific numbered clauses from structured documents (contracts, policy docs)
+- Find all requirement statements (shall/must/REQ-NNN) in a document
+- Compare two documents side-by-side (clause-by-clause or structural diff)
+- Summarise documents and answer yes/no compliance questions with citations
+
+**Supported File Formats:**
+- PDF, DOCX, TXT, Markdown — via the ingest API or file upload
+- CSV, XLSX — for data analysis tasks
+- Images with text — via OCR (if enabled)
+
+**Multi-Agent Coordination:**
+- The system automatically routes your question to the right specialist
+- For document questions → RAG Agent (14 search and extraction tools)
+- For data analysis → Data Analyst Agent (Python/pandas in a sandbox)
+- For calculations and memory → Utility Agent
+- For parallel document comparison → Parallel RAG (fan-out workers)
+
+**Persistent Memory:**
+- Facts saved with the memory tools persist across conversation sessions
+- Use phrases like "remember that my company name is Acme Corp"
+
+**File Upload:**
+- Upload files via the UI or the `/v1/ingest/documents` API endpoint
+- Files are indexed immediately and searchable within seconds

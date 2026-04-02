@@ -1,0 +1,238 @@
+/* ── Agent Status Panel ─────────────────────────────────── */
+.agent-status-panel {
+  margin-bottom: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.agent-status-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: #6b7280;
+}
+
+.agent-waiting-text {
+  font-style: italic;
+}
+
+/* Animated dot */
+.agent-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.agent-dot-live {
+  background: #3b82f6;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.agent-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  gap: 8px;
+  color: #374151;
+}
+
+.agent-status-header:hover {
+  background: #f3f4f6;
+}
+
+.agent-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-current-label {
+  font-weight: 500;
+  color: #1d4ed8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-done-icon {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.agent-summary-label {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.agent-chevron {
+  color: #9ca3af;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Panel body */
+.agent-status-body {
+  padding: 8px 12px 10px;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* Agent node chips row */
+.agent-nodes-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.agent-node-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* Tool call list */
+.tool-calls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-call-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.tool-call-item.tool-call-error {
+  border-color: #fca5a5;
+}
+
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: #374151;
+}
+
+.tool-call-header:hover {
+  background: #f9fafb;
+}
+
+.tool-icon {
+  flex-shrink: 0;
+}
+
+.tool-name {
+  font-weight: 500;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-weight: 500;
+}
+
+.badge-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge-error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.badge-running {
+  background: #dbeafe;
+  color: #1e40af;
+  animation: pulse-badge 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.tool-chevron {
+  color: #9ca3af;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.tool-call-body {
+  padding: 8px 10px;
+  border-top: 1px solid #f3f4f6;
+  background: #fafafa;
+}
+
+.tool-section {
+  margin-bottom: 8px;
+}
+
+.tool-section:last-child {
+  margin-bottom: 0;
+}
+
+.tool-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9ca3af;
+  margin-bottom: 4px;
+}
+
+.tool-code {
+  margin: 0;
+  padding: 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  color: #1f2937;
+}

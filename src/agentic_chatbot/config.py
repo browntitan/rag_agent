@@ -212,7 +212,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
 
     # Ollama
     ollama_base_url = str(_getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "qwen3:8b"))
+    ollama_chat_model = str(_getenv("OLLAMA_CHAT_MODEL", "qwen3.5:9b"))
     ollama_embed_model = str(_getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"))
     ollama_judge_model = str(_getenv("OLLAMA_JUDGE_MODEL", ollama_chat_model))
     ollama_temperature = _as_float("OLLAMA_TEMPERATURE", 0.2)
@@ -272,6 +272,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     # PostgreSQL
     pg_dsn = str(_getenv("PG_DSN", "postgresql://localhost:5432/ragdb"))
     embedding_dim = _as_int("EMBEDDING_DIM", 768)
+
 
     # Paths
     kb_dir = Path(_getenv("KB_DIR", str(data_dir / "kb")))

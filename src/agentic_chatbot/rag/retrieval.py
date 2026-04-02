@@ -50,14 +50,78 @@ def keyword_search(
     )
 
 
-def merge_dedupe(chunks: Sequence[ScoredChunk]) -> List[ScoredChunk]:
-    """Deduplicate by chunk_id, keeping the highest score per chunk."""
-    by_key: Dict[str, ScoredChunk] = {}
+def merge_dedupe(
+    chunks: Sequence[ScoredChunk],
+    *,
+    use_rrf: bool = True,
+    k_constant: int = 60,
+) -> List[ScoredChunk]:
+    """Deduplicate and optionally re-rank results using Reciprocal Rank Fusion (RRF).
+
+    When ``use_rrf=True`` (default), chunks from separate ranked lists are fused
+    using the RRF formula: ``score = sum(1 / (k + rank + 1))`` across all lists
+    where ``rank`` is the 0-based position in that list.  Chunks appearing in
+    both vector and keyword lists receive higher fused scores, naturally
+    rewarding evidence that is both semantically and lexically relevant.
+
+    When ``use_rrf=False``, falls back to simple dedup keeping the highest
+    individual score per chunk — compatible with prior behaviour.
+
+    Args:
+        chunks:      Sequence of ScoredChunks from one or more retrieval methods.
+                     Each chunk's ``.method`` attribute (``'vector'`` or ``'keyword'``)
+                     is used to group into separate ranked lists before fusion.
+        use_rrf:     Whether to apply RRF scoring (default: True).
+        k_constant:  RRF smoothing constant (default: 60, standard literature value).
+
+    Returns:
+        Deduplicated list of ScoredChunks ordered by descending fused score.
+        Chunks present in both lists are labelled ``method='hybrid_rrf'``.
+    """
+    if not use_rrf:
+        # Legacy behaviour: keep highest-score-per-chunk
+        by_key: Dict[str, ScoredChunk] = {}
+        for c in chunks:
+            k = _doc_key(c.doc)
+            if k not in by_key or c.score > by_key[k].score:
+                by_key[k] = c
+        return list(by_key.values())
+
+    # ── RRF fusion ────────────────────────────────────────────────────────
+    # 1. Separate into ranked lists by retrieval method
+    lists_by_method: Dict[str, List[ScoredChunk]] = {}
     for c in chunks:
-        k = _doc_key(c.doc)
-        if k not in by_key or c.score > by_key[k].score:
-            by_key[k] = c
-    return list(by_key.values())
+        method = c.method or "unknown"
+        lists_by_method.setdefault(method, []).append(c)
+
+    # Each list is already ordered by its native score (descending).
+    # Sort to be sure.
+    for method_list in lists_by_method.values():
+        method_list.sort(key=lambda x: x.score, reverse=True)
+
+    # 2. Accumulate RRF scores and track methods per chunk
+    rrf_scores: Dict[str, float] = {}
+    rrf_methods: Dict[str, set] = {}
+    rrf_chunk_ref: Dict[str, ScoredChunk] = {}
+
+    for ranked_list in lists_by_method.values():
+        for rank, chunk in enumerate(ranked_list):
+            key = _doc_key(chunk.doc)
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k_constant + rank + 1)
+            rrf_methods.setdefault(key, set()).add(chunk.method)
+            if key not in rrf_chunk_ref:
+                rrf_chunk_ref[key] = chunk
+
+    # 3. Build output with updated scores and method labels
+    fused: List[ScoredChunk] = []
+    for key, fused_score in rrf_scores.items():
+        ref = rrf_chunk_ref[key]
+        methods_seen = rrf_methods[key]
+        method_label = "hybrid_rrf" if len(methods_seen) > 1 else next(iter(methods_seen))
+        fused.append(ScoredChunk(doc=ref.doc, score=round(fused_score, 6), method=method_label))
+
+    fused.sort(key=lambda x: x.score, reverse=True)
+    return fused
 
 
 def retrieve_candidates(

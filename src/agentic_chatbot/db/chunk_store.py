@@ -259,6 +259,41 @@ class ChunkStore:
         return [ScoredChunk.from_row(dict(r), float(r["score"]), "keyword") for r in rows]
 
     # ------------------------------------------------------------------
+    # Full-text search within a single document (full content)
+    # ------------------------------------------------------------------
+
+    def full_text_search_document(
+        self,
+        query: str,
+        doc_id: str,
+        top_k: int = 20,
+        tenant_id: str = "local-dev",
+    ) -> List[ChunkRecord]:
+        """Full-text search within a single document, returning full ChunkRecords.
+
+        Unlike keyword_search() which returns ScoredChunks with truncated content
+        wrapped in LangChain Documents, this returns raw ChunkRecords with complete
+        content text, page numbers, section titles, and clause numbers. Ordered by
+        ts_rank_cd relevance score descending.
+        """
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT *, ts_rank_cd(ts, plainto_tsquery('english', %s)) AS score
+                    FROM chunks
+                    WHERE ts @@ plainto_tsquery('english', %s)
+                      AND doc_id = %s
+                      AND tenant_id = %s
+                    ORDER BY score DESC
+                    LIMIT %s
+                    """,
+                    (query, query, doc_id, tenant_id, top_k),
+                )
+                rows = cur.fetchall()
+        return [_row_to_chunk(dict(r)) for r in rows]
+
+    # ------------------------------------------------------------------
     # Structured retrieval (clause/requirement aware)
     # ------------------------------------------------------------------
 

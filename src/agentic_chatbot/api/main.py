@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
+import threading
 import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from agentic_chatbot.api.progress_callback import ProgressCallback
+
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -225,6 +229,73 @@ def _stream_chat_chunks(model: str, text: str) -> Iterable[str]:
     yield "data: [DONE]\n\n"
 
 
+def _stream_with_progress(
+    model: str,
+    session: Any,
+    user_text: str,
+    bot: Any,
+    force_agent: bool,
+    prompt_tokens: int,
+) -> Iterable[str]:
+    """SSE generator that emits real-time progress events then text content.
+
+    Runs process_turn() in a background thread. While it runs, reads typed
+    progress events from the ProgressCallback queue and yields them as named
+    SSE events. After completion yields the text content as chat.completion.chunk
+    events.
+
+    Named SSE event format:
+        event: progress
+        data: {"type": "agent_start", "node": "rag_agent", ...}
+
+    Content chunks use the standard OpenAI format (no event: prefix):
+        data: {"choices": [{"delta": {"content": "..."}}]}
+    """
+    progress_cb = ProgressCallback()
+    result_holder: Dict[str, Any] = {}
+    exc_holder: Dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            answer = bot.process_turn(
+                session,
+                user_text=user_text,
+                upload_paths=[],
+                force_agent=force_agent,
+                extra_callbacks=[progress_cb],
+            )
+            result_holder["answer"] = answer
+        except Exception as exc:
+            exc_holder["error"] = exc
+        finally:
+            progress_cb.mark_done()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # Stream progress events while process_turn is running
+    while True:
+        try:
+            event = progress_cb.events.get(timeout=30)  # 30s per-event timeout
+        except queue.Empty:
+            # Safety valve — shouldn't happen in practice
+            break
+        if event is None:  # sentinel: processing complete
+            break
+        yield f"event: progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    thread.join(timeout=5)
+
+    # Check for errors
+    if exc_holder.get("error"):
+        err_text = f"Error: {str(exc_holder['error'])[:200]}"
+        yield from _stream_chat_chunks(model, err_text)
+        return
+
+    answer = result_holder.get("answer", "")
+    yield from _stream_chat_chunks(model, answer)
+
+
 def get_request_context(
     runtime: Runtime,
     conversation_id: Optional[str],
@@ -238,6 +309,16 @@ def get_request_context(
 
 
 app = FastAPI(title="Agentic Gateway", version="1.0.0")
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health/live")
@@ -297,18 +378,25 @@ def chat_completions(
     session = ChatSession.from_context(ctx, messages=history)
 
     force_agent = bool(request.metadata.get("force_agent", False))
-    answer = runtime.bot.process_turn(session, user_text=user_text, upload_paths=[], force_agent=force_agent)
 
     prompt_text = "\n".join(_coerce_content(m.content) for m in request.messages)
     prompt_tokens = _estimate_tokens(prompt_text)
 
     if request.stream:
         return StreamingResponse(
-            _stream_chat_chunks(request.model, answer),
+            _stream_with_progress(
+                request.model,
+                session,
+                user_text,
+                runtime.bot,
+                force_agent=force_agent,
+                prompt_tokens=prompt_tokens,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
+    answer = runtime.bot.process_turn(session, user_text=user_text, upload_paths=[], force_agent=force_agent)
     payload = _build_openai_completion_payload(request.model, answer, prompt_tokens)
     return JSONResponse(payload)
 
@@ -373,6 +461,78 @@ def ingest_documents(
         "ingested_count": len(doc_ids),
         "doc_ids": doc_ids,
         "missing_paths": missing,
+    }
+    if workspace_copies:
+        result["workspace_copies"] = workspace_copies
+    return result
+
+
+@app.post("/v1/upload")
+async def upload_files(
+    files: List[UploadFile] = File(...),
+    source_type: str = "upload",
+    runtime: Runtime = Depends(get_runtime_or_503),
+    x_conversation_id: Optional[str] = Header(None, alias="X-Conversation-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+) -> Dict[str, Any]:
+    """Accept multipart file uploads from the frontend.
+
+    Saves files to the uploads directory, ingests them into the KB,
+    and optionally copies them into the session workspace.
+    """
+    ctx = get_request_context(
+        runtime,
+        conversation_id=x_conversation_id,
+        request_id=x_request_id,
+    )
+    logger.info(
+        "upload_files request tenant=%s conversation=%s files=%d",
+        ctx.tenant_id,
+        ctx.conversation_id,
+        len(files),
+    )
+
+    uploads_dir = runtime.settings.uploads_dir
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: List[Path] = []
+    errors: List[str] = []
+    for file in files:
+        try:
+            dest = uploads_dir / (file.filename or f"upload_{uuid.uuid4().hex}")
+            content_bytes = await file.read()
+            dest.write_bytes(content_bytes)
+            saved_paths.append(dest)
+        except Exception as e:
+            errors.append(f"{file.filename}: {str(e)}")
+
+    doc_ids = ingest_paths(
+        runtime.settings,
+        runtime.bot.ctx.stores,
+        saved_paths,
+        source_type=source_type,
+        tenant_id=ctx.tenant_id,
+    )
+
+    # Copy to workspace if active
+    ws_id = x_conversation_id or runtime.settings.default_conversation_id
+    ws_root = runtime.settings.workspace_dir / ws_id
+    workspace_copies: List[str] = []
+    if ws_root.is_dir():
+        for p in saved_paths:
+            try:
+                shutil.copy2(p, ws_root / p.name)
+                workspace_copies.append(p.name)
+            except Exception:
+                pass
+
+    result: Dict[str, Any] = {
+        "object": "upload.result",
+        "tenant_id": ctx.tenant_id,
+        "ingested_count": len(doc_ids),
+        "doc_ids": doc_ids,
+        "filenames": [p.name for p in saved_paths],
+        "errors": errors,
     }
     if workspace_copies:
         result["workspace_copies"] = workspace_copies
