@@ -1,143 +1,109 @@
 # Skills Playbook
 
-This playbook explains how skills work in this codebase, how to author new skills safely, and how to validate skill changes before demos or production-like runs.
+The runtime uses two complementary skill layers.
 
-## What "skills" mean here
+## 1. Base role prompts
 
-In this repository, a "skill" is a markdown prompt file loaded as system instructions for one or more agents.
-Skills are not external plugins. They are instruction files used by the orchestration runtime.
+Base prompts live in `data/skills/*.md`.
 
-Skill files live in `data/skills/` and are loaded through `src/agentic_chatbot/rag/skills.py`.
-
-## Skill Files and Responsibilities
-
-- `data/skills/skills.md`
-  - Shared global context injected into all specialist prompts.
-- `data/skills/general_agent.md`
-  - Legacy fallback GeneralAgent behavior and tool-use guidance.
-- `data/skills/rag_agent.md`
-  - RAG agent decision policy (resolve, search, extract, compare, scratchpad).
-- `data/skills/supervisor_agent.md`
-  - Multi-agent routing policy. Uses `{{available_agents}}` template variable — agent list is injected dynamically from `AgentRegistry` at node-build time.
-- `data/skills/utility_agent.md`
-  - Utility agent behavior for calculator, doc listing, and memory tools.
-- `data/skills/data_analyst_agent.md`
-  - Data analyst agent plan-verify-reflect workflow. See below for structure details.
-- `data/skills/basic_chat.md`
-  - Basic no-tool chat behavior.
-
-## Load Timing and Hot Reload Behavior
+Examples:
 
 - `general_agent.md`
-  - Loaded at app startup in orchestrator init.
-  - Requires app restart to guarantee updates are picked up.
-- `basic_chat.md`
-  - Loaded at app startup in orchestrator init.
-  - Requires app restart for deterministic rollout.
 - `rag_agent.md`
-  - Loaded on each `run_rag_agent()` call.
-  - Changes apply on the next RAG turn.
-- `supervisor_agent.md`
-  - Loaded when graph nodes are built per turn.
-  - Changes apply on the next AGENT turn.
-  - Note: the `{{available_agents}}` section is rendered from `AgentRegistry` at load time — editing that section directly has no effect.
 - `utility_agent.md`
-  - Loaded when utility node is built per turn.
-  - Changes apply on the next AGENT turn.
 - `data_analyst_agent.md`
-  - Loaded when the data analyst node is built per turn.
-  - Changes apply on the next AGENT turn that routes to `data_analyst`.
-- `skills.md`
-  - Shared include; effective reload behavior follows whichever agent loads it.
+- `planner_agent.md`
+- `finalizer_agent.md`
+- `supervisor_agent.md` for the opt-in `coordinator`
 
-## Skill Authoring Rules
+These files define stable role behavior and should stay compact.
 
-Use these rules to keep agent behavior stable and debuggable:
+## 2. Retrievable skill packs
 
-- Be explicit about tool order and stop conditions.
-- Use deterministic phrasing for required steps.
-- Avoid broad instructions like "use any tool as needed" without guardrails.
-- Include failure handling behavior (empty search results, ambiguous doc matches).
-- Require transparency when evidence is missing.
-- Prefer short imperative statements over long narrative prose.
+Retrievable skill packs live in `data/skill_packs/**/*.md`.
 
-## Recommended Skill Template
+They are:
 
-```markdown
-# <Agent Name> Instructions
+- file-authored
+- version-controlled
+- synced into PostgreSQL
+- retrieved dynamically through `SkillContextResolver`
 
-## Mission
-<1-2 lines on objective>
+## Skill-pack metadata
 
-## Tool Selection Rules
-1. <when to use tool A>
-2. <when to use tool B>
+Supported metadata includes:
 
-## Execution Order
-1. <first action>
-2. <second action>
-3. <synthesis/termination>
+- `skill_id`
+- `agent_scope`
+- `tool_tags`
+- `task_tags`
+- `version`
+- `enabled`
+- `description`
 
-## Failure Recovery
-- If <condition>: <action>
-- If <condition>: <action>
+## Indexing flow
 
-## Output Requirements
-- <citation style>
-- <format expectations>
-- <warning behavior>
+```mermaid
+flowchart LR
+    files["data/skill_packs/**/*.md"]
+    sync["SkillIndexSync"]
+    db["skills + skill_chunks"]
+    resolver["SkillContextResolver"]
+    runtime["HybridRuntimeLoop"]
+
+    files --> sync --> db --> resolver --> runtime
 ```
 
-## Anti-Patterns to Avoid
+## Runtime flow in the current kernel
 
-- Mixing supervisor routing policy into utility skill file.
-- Requiring tools unavailable to that agent.
-- Conflicting priority rules ("always do X" and "never do X").
-- Unbounded retry loops in instructions.
-- Hidden assumptions about document names or IDs.
+For a runtime agent that has `skill_agent_scope` set:
 
-## Adding a New Skill File
+1. the loop resolves bounded skill context for the current user text
+2. the context is attached to `ToolContext.skill_context`
+3. the base prompt is extended with a `## Skill Context` block
+4. the agent runs with targeted guidance for that turn
 
-1. Create markdown file under `data/skills/`.
-2. Add a config path in `.env`/`.env.example` if needed.
-3. Wire loader function in `src/agentic_chatbot/rag/skills.py`.
-4. Inject into the target runtime path (orchestrator, graph node, or agent).
-5. Add docs and demo scenario coverage before rollout.
+This replaces the older framing where executor-local prompt assembly was the main way to
+inject retrieved skills.
 
-## Data Analyst Skill Structure
+## Where skill retrieval is used
 
-`data/skills/data_analyst_agent.md` encodes a mandatory **Plan-Verify-Reflect** workflow:
+Current runtime roles that normally use retrieved skill context:
 
-| Step | Action | Tool(s) |
-|---|---|---|
-| 1. Load & Inspect | Understand schema before writing any code | `load_dataset`, `inspect_columns` |
-| 2. Plan | Write analysis strategy to scratchpad | `scratchpad_write` |
-| 3. Execute | Run Python code in Docker sandbox | `execute_code` |
-| 4. Verify | Check outputs make sense; retry on error | `execute_code` again if needed |
-| 5. Reflect | Summarize findings in natural language | _(synthesis)_ |
+- `general`
+- `utility`
+- `data_analyst`
+- `rag_worker`
+- `planner`
+- `finalizer`
+- `verifier`
+- `memory_maintainer`
 
-Skill validation: `SkillsLoader` requires the `## Operating Rules` section to be present. Missing that section raises `SkillValidationError` on load.
+The exact scope is controlled by `AgentDefinition.skill_agent_scope`.
 
-The supervisor prompt uses `{{available_agents}}`. This template variable is not edited directly — it is generated by `AgentRegistry.format_for_supervisor_prompt()` at graph build time. Editing the supervisor skill file affects all sections except `{{available_agents}}`.
+`coordinator` is the main exception in the live runtime: its built-in definition leaves
+`skill_agent_scope=""`, so it does not normally receive automatic retrieved skill context.
 
-## Demo Validation Checklist for Skill Changes
+## Relationship to `search_skills`
 
-Before presenting skill updates:
+Retrieved skill context and `search_skills` are different mechanisms:
 
-1. Run `python run.py demo --list-scenarios` to confirm scenario inventory is intact.
-2. Run at least one scenario per target agent class:
-   - utility
-   - rag
-   - supervisor/parallel
-   - data_analyst (requires Docker running)
-3. Run with verification enabled:
-   - `python run.py demo --scenario <id> --verify --force-agent`
-4. Confirm no hard-failure phrases in outputs.
-5. If Langfuse is enabled, confirm traces show expected routing and tool calls.
+- `SkillContextResolver` is automatic, bounded, and kernel-driven
+- `search_skills` is a model-invoked tool for explicit lookup during a turn
 
-## Production Hardening Suggestions
+Both remain useful.
 
-- Treat skill files like code: PR review, changelog, owner, and rollback plan.
-- Maintain a skills regression checklist for high-risk prompts.
-- Keep explicit version notes in skill headers for auditability.
-- Prefer incremental skill edits over large one-shot rewrites.
+## Commands
+
+Index skill packs:
+
+```bash
+python run.py index-skills
+```
+
+Inspect indexed skills:
+
+```bash
+python run.py list-skills
+python run.py inspect-skill <skill_id>
+```

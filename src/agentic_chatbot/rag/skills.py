@@ -6,6 +6,10 @@ Skills files live in data/skills/:
   rag_agent.md           – RAGAgent-specific instructions
   supervisor_agent.md    – Supervisor routing instructions
   utility_agent.md       – Utility agent instructions
+  planner_agent.md       – Planner instructions
+  finalizer_agent.md     – Finalizer instructions
+  verifier_agent.md      – Verifier instructions
+  data_analyst_agent.md  – Data analyst instructions
   basic_chat.md          – BasicChat instructions
 
 If a file is missing, each function falls back to a hard-coded default.
@@ -122,3 +126,30 @@ def load_data_analyst_skills(
 ) -> str:
     """Return the Data Analyst agent system prompt (shared preamble + agent-specific)."""
     return get_skills_loader(settings).load("data_analyst_agent", context=context)
+
+
+def load_planner_agent_skills(
+    settings: Settings,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the Planner agent system prompt (shared preamble + agent-specific)."""
+    return get_skills_loader(settings).load("planner_agent", context=context)
+
+
+def load_finalizer_agent_skills(
+    settings: Settings,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the Finalizer agent system prompt (shared preamble + agent-specific)."""
+    return get_skills_loader(settings).load("finalizer_agent", context=context)
+
+
+def load_verifier_agent_skills(
+    settings: Settings,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the Verifier agent system prompt (shared preamble + agent-specific)."""
+    return get_skills_loader(settings).load("verifier_agent", context=context)

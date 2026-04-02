@@ -205,6 +205,50 @@ class TestLoadDatasetErrors:
 
         assert "error" in result
 
+    def test_next_runtime_load_dataset_can_resolve_workspace_file(self, tmp_path):
+        csv_file = tmp_path / "workspace_data.csv"
+        _write_csv(csv_file, "region,spend\nNA,10\nEU,20\n")
+
+        session = _make_session()
+        session.workspace = MagicMock()
+        session.workspace.root = tmp_path
+        session.workspace.exists.side_effect = lambda filename: (tmp_path / filename).exists()
+        stores = MagicMock()
+        stores.doc_store.get_document.return_value = None
+        settings = _make_settings()
+
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
+
+        tools = make_data_analyst_tools(stores, session, settings=settings)
+        load_tool = next(t for t in tools if t.name == "load_dataset")
+        result = json.loads(load_tool.invoke({"doc_id": "workspace_data.csv"}))
+
+        assert "error" not in result
+        assert result["doc_id"] == "workspace_data.csv"
+        assert result["shape"] == [2, 2]
+
+    def test_next_runtime_load_dataset_defaults_to_first_workspace_file_when_doc_id_missing(self, tmp_path):
+        csv_file = tmp_path / "workspace_data.csv"
+        _write_csv(csv_file, "region,spend\nNA,10\nEU,20\n")
+
+        session = _make_session()
+        session.workspace = MagicMock()
+        session.workspace.root = tmp_path
+        session.workspace.exists.side_effect = lambda filename: (tmp_path / filename).exists()
+        session.workspace.list_files.return_value = ["workspace_data.csv"]
+        stores = MagicMock()
+        stores.doc_store.get_document.return_value = None
+        settings = _make_settings()
+
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
+
+        tools = make_data_analyst_tools(stores, session, settings=settings)
+        load_tool = next(t for t in tools if t.name == "load_dataset")
+        result = json.loads(load_tool.invoke({}))
+
+        assert "error" not in result
+        assert result["doc_id"] == "workspace_data.csv"
+
 
 # ---------------------------------------------------------------------------
 # inspect_columns — numeric

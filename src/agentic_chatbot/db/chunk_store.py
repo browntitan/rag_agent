@@ -16,6 +16,7 @@ class ChunkRecord:
     chunk_index: int
     content: str
     tenant_id: str = "local-dev"
+    collection_id: str = "default"
     chunk_type: str = "general"          # 'general'|'clause'|'section'|'requirement'|'header'
     page_number: Optional[int] = None
     clause_number: Optional[str] = None  # e.g. '3', '3.2', '10.1.4'
@@ -37,6 +38,7 @@ class ScoredChunk:
             "chunk_id":      row.get("chunk_id", ""),
             "doc_id":        row.get("doc_id", ""),
             "tenant_id":     row.get("tenant_id", "local-dev"),
+            "collection_id": row.get("collection_id", "default"),
             "chunk_index":   row.get("chunk_index", 0),
             "chunk_type":    row.get("chunk_type", "general"),
             "page":          row.get("page_number"),
@@ -76,6 +78,7 @@ class ChunkStore:
                 ch.chunk_id,
                 ch.doc_id,
                 tenant_id,
+                ch.collection_id,
                 ch.chunk_index,
                 ch.page_number,
                 ch.clause_number,
@@ -95,11 +98,12 @@ class ChunkStore:
                     cur,
                     """
                     INSERT INTO chunks
-                        (chunk_id, doc_id, tenant_id, chunk_index, page_number,
+                        (chunk_id, doc_id, tenant_id, collection_id, chunk_index, page_number,
                          clause_number, section_title, content, embedding, chunk_type)
                     VALUES %s
                     ON CONFLICT (chunk_id) DO UPDATE SET
                         tenant_id     = EXCLUDED.tenant_id,
+                        collection_id = EXCLUDED.collection_id,
                         content       = EXCLUDED.content,
                         embedding     = EXCLUDED.embedding,
                         chunk_type    = EXCLUDED.chunk_type,
@@ -108,7 +112,7 @@ class ChunkStore:
                     """,
                     rows,
                     template=(
-                        "(%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)"
+                        "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)"
                     ),
                 )
             conn.commit()
@@ -128,6 +132,7 @@ class ChunkStore:
         query: str,
         top_k: int = 12,
         doc_id_filter: Optional[str] = None,
+        collection_id_filter: Optional[str] = None,
         tenant_id: str = "local-dev",
     ) -> List[ScoredChunk]:
         """ANN vector search via HNSW cosine distance."""
@@ -152,6 +157,22 @@ class ChunkStore:
                         LIMIT %s
                         """,
                         (embedding, doc_id_filter, tenant_id, tenant_id, embedding, top_k),
+                    )
+                elif collection_id_filter:
+                    cur.execute(
+                        """
+                        SELECT c.*, d.title, d.source_type, d.source_path,
+                               1 - (c.embedding <=> %s::vector) AS score
+                        FROM chunks c
+                        JOIN documents d USING (doc_id)
+                        WHERE c.tenant_id = %s
+                          AND d.tenant_id = %s
+                          AND c.collection_id = %s
+                          AND d.collection_id = %s
+                        ORDER BY c.embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (embedding, tenant_id, tenant_id, collection_id_filter, collection_id_filter, embedding, top_k),
                     )
                 else:
                     cur.execute(
@@ -179,6 +200,7 @@ class ChunkStore:
         query: str,
         top_k: int = 12,
         doc_id_filter: Optional[str] = None,
+        collection_id_filter: Optional[str] = None,
         tenant_id: str = "local-dev",
     ) -> List[ScoredChunk]:
         """PostgreSQL full-text search via tsvector/tsquery."""
@@ -199,6 +221,23 @@ class ChunkStore:
                         LIMIT %s
                         """,
                         (query, query, doc_id_filter, tenant_id, tenant_id, top_k),
+                    )
+                elif collection_id_filter:
+                    cur.execute(
+                        """
+                        SELECT c.*, d.title, d.source_type, d.source_path,
+                               ts_rank_cd(c.ts, plainto_tsquery('english', %s)) AS score
+                        FROM chunks c
+                        JOIN documents d USING (doc_id)
+                        WHERE c.ts @@ plainto_tsquery('english', %s)
+                          AND c.tenant_id = %s
+                          AND d.tenant_id = %s
+                          AND c.collection_id = %s
+                          AND d.collection_id = %s
+                        ORDER BY score DESC
+                        LIMIT %s
+                        """,
+                        (query, query, tenant_id, tenant_id, collection_id_filter, collection_id_filter, top_k),
                     )
                 else:
                     cur.execute(
@@ -362,6 +401,7 @@ def _row_to_chunk(row: Dict[str, Any]) -> ChunkRecord:
         chunk_id=row.get("chunk_id", ""),
         doc_id=row.get("doc_id", ""),
         tenant_id=row.get("tenant_id") or "local-dev",
+        collection_id=row.get("collection_id") or "default",
         chunk_index=row.get("chunk_index", 0),
         content=row.get("content", ""),
         chunk_type=row.get("chunk_type", "general"),

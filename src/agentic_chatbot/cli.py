@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.error import URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -14,7 +14,6 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agentic_chatbot.config import Settings, load_settings
-from agentic_chatbot.context import build_local_context
 from agentic_chatbot.demo import (
     DemoScenario,
     DemoTurn,
@@ -25,12 +24,15 @@ from agentic_chatbot.demo import (
 from agentic_chatbot.providers import (
     ProviderConfigurationError,
     ProviderDependencyError,
+    build_embeddings,
     build_providers,
     validate_provider_configuration,
     validate_provider_dependencies,
 )
-from agentic_chatbot.agents.orchestrator import ChatbotApp
-from agentic_chatbot.agents.session import ChatSession
+from agentic_chatbot_next.app.cli_adapter import CliAdapter
+from agentic_chatbot_next.app.service import RuntimeService
+from agentic_chatbot_next.context import build_local_context
+from agentic_chatbot_next.session import ChatSession
 
 
 app = typer.Typer(add_completion=False)
@@ -45,14 +47,33 @@ class DoctorCheckResult:
     remediation: str = ""
 
 
-def _build_bot(settings: Settings) -> ChatbotApp:
+@dataclass(frozen=True)
+class StoreContext:
+    settings: Settings
+    stores: Any
+
+
+def _build_bot(settings: Settings) -> RuntimeService:
     providers = build_providers(settings)
-    return ChatbotApp.create(settings, providers)
+    return CliAdapter.create_service(settings, providers)
 
 
-def _make_app(dotenv: Optional[str] = None) -> ChatbotApp:
+def _build_store_context(settings: Settings) -> StoreContext:
+    from agentic_chatbot_next.rag import load_stores
+
+    embeddings = build_embeddings(settings)
+    stores = load_stores(settings, embeddings)
+    return StoreContext(settings=settings, stores=stores)
+
+
+def _make_app(dotenv: Optional[str] = None) -> RuntimeService:
     settings = load_settings(dotenv)
     return _build_bot(settings)
+
+
+def _make_store_context(dotenv: Optional[str] = None) -> StoreContext:
+    settings = load_settings(dotenv)
+    return _build_store_context(settings)
 
 
 def _make_local_session(dotenv: Optional[str] = None, conversation_id: Optional[str] = None) -> ChatSession:
@@ -113,7 +134,7 @@ def _mask_dsn_password(dsn: str) -> str:
     return urlunsplit((parsed.scheme, f"{masked_userinfo}@{hostinfo}", parsed.path, parsed.query, parsed.fragment))
 
 
-def _read_chunks_embedding_dim(conn) -> Optional[int]:
+def _read_table_embedding_dim(conn, table_name: str) -> Optional[int]:
     from agentic_chatbot.db.vector_schema import parse_vector_dimension
 
     with conn.cursor() as cur:
@@ -124,11 +145,12 @@ def _read_chunks_embedding_dim(conn) -> Optional[int]:
             JOIN pg_class c ON c.oid = a.attrelid
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = current_schema()
-              AND c.relname = 'chunks'
+              AND c.relname = %s
               AND a.attname = 'embedding'
               AND a.attnum > 0
               AND NOT a.attisdropped
-            """
+            """,
+            (table_name,),
         )
         row = cur.fetchone()
     if not row:
@@ -143,7 +165,7 @@ def _exit_provider_error(exc: Exception) -> None:
     raise typer.Exit(code=2)
 
 
-def _make_app_or_exit(dotenv: Optional[str] = None) -> ChatbotApp:
+def _make_app_or_exit(dotenv: Optional[str] = None) -> RuntimeService:
     try:
         return _make_app(dotenv)
     except (ProviderDependencyError, ProviderConfigurationError) as exc:
@@ -151,9 +173,25 @@ def _make_app_or_exit(dotenv: Optional[str] = None) -> ChatbotApp:
         raise
 
 
-def _build_bot_or_exit(settings: Settings) -> ChatbotApp:
+def _build_bot_or_exit(settings: Settings) -> RuntimeService:
     try:
         return _build_bot(settings)
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
+        _exit_provider_error(exc)
+        raise
+
+
+def _make_store_context_or_exit(dotenv: Optional[str] = None) -> StoreContext:
+    try:
+        return _make_store_context(dotenv)
+    except (ProviderDependencyError, ProviderConfigurationError) as exc:
+        _exit_provider_error(exc)
+        raise
+
+
+def _build_store_context_or_exit(settings: Settings) -> StoreContext:
+    try:
+        return _build_store_context(settings)
     except (ProviderDependencyError, ProviderConfigurationError) as exc:
         _exit_provider_error(exc)
         raise
@@ -166,6 +204,17 @@ def _with_demo_settings(settings: Settings) -> Settings:
     if target_predict == settings.ollama_num_predict:
         return settings
     return replace(settings, ollama_num_predict=target_predict)
+
+
+def _selected_ollama_models(settings: Settings) -> dict[str, str]:
+    models: dict[str, str] = {}
+    if settings.llm_provider.lower() == "ollama":
+        models["llm"] = settings.ollama_chat_model
+    if settings.judge_provider.lower() == "ollama":
+        models["judge"] = settings.ollama_judge_model
+    if settings.embeddings_provider.lower() == "ollama":
+        models["embeddings"] = settings.ollama_embed_model
+    return models
 
 
 @app.command()
@@ -231,18 +280,37 @@ def chat(
 
 @app.command()
 def init_kb(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
-    """Force (re)indexing of the built-in demo KB."""
+    """Deprecated alias: seed the built-in demo KB into the default collection."""
 
-    bot = _make_app_or_exit(dotenv)
-    # `ensure_kb_indexed` already runs on init; this command just confirms.
-    console.print("KB indexing ensured. Indexed documents:")
-    tenant_id = bot.ctx.settings.default_tenant_id
-    records = bot.ctx.stores.doc_store.list_documents(tenant_id=tenant_id)
+    store_ctx = _make_store_context_or_exit(dotenv)
+    tenant_id = store_ctx.settings.default_tenant_id
+    console.print(
+        "[yellow]`init-kb` is deprecated.[/yellow] "
+        "Use `python run.py sync-kb` for normal DB-first ingestion. "
+        "This command now only seeds the bundled demo KB."
+    )
+    from agentic_chatbot_next.rag import ingest_paths  # noqa: PLC0415
+
+    kb_paths = sorted(Path(store_ctx.settings.kb_dir).glob("*"))
+    ingest_paths(
+        store_ctx.settings,
+        store_ctx.stores,
+        kb_paths,
+        source_type="kb",
+        tenant_id=tenant_id,
+        collection_id=store_ctx.settings.default_collection_id,
+    )
+    records = store_ctx.stores.doc_store.list_documents(
+        tenant_id=tenant_id,
+        source_type="kb",
+        collection_id=store_ctx.settings.default_collection_id,
+    )
     docs = [
         {
             "doc_id": r.doc_id,
             "title": r.title,
             "source_type": r.source_type,
+            "collection_id": r.collection_id,
             "num_chunks": r.num_chunks,
             "doc_structure_type": r.doc_structure_type,
         }
@@ -251,18 +319,214 @@ def init_kb(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
     console.print(json.dumps(docs, indent=2, ensure_ascii=False)[:4000])
 
 
+@app.command("sync-kb")
+def sync_kb(
+    path: List[Path] = typer.Option([], "--path", "-p", help="File(s) to ingest. Defaults to all files in data/kb."),
+    source_type: str = typer.Option("kb", "--source-type"),
+    collection_id: Optional[str] = typer.Option(None, "--collection-id"),
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+):
+    """Ingest a corpus into PostgreSQL + pgvector using an explicit collection ID."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    tenant_id = store_ctx.settings.default_tenant_id
+    paths = path or sorted(Path(store_ctx.settings.kb_dir).glob("*"))
+    from agentic_chatbot_next.rag import ingest_paths  # noqa: PLC0415
+
+    doc_ids = ingest_paths(
+        store_ctx.settings,
+        store_ctx.stores,
+        paths,
+        source_type=source_type,
+        tenant_id=tenant_id,
+        collection_id=collection_id or store_ctx.settings.default_collection_id,
+    )
+    console.print(
+        json.dumps(
+            {
+                "ingested_doc_ids": doc_ids,
+                "count": len(doc_ids),
+                "collection_id": collection_id or store_ctx.settings.default_collection_id,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("reindex-document")
+def reindex_document(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+    source_type: str = typer.Option("kb", "--source-type"),
+    collection_id: Optional[str] = typer.Option(None, "--collection-id"),
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+):
+    """Delete any existing rows for a source path, then ingest the file again."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    tenant_id = store_ctx.settings.default_tenant_id
+    effective_collection = collection_id or store_ctx.settings.default_collection_id
+    existing = [
+        record
+        for record in store_ctx.stores.doc_store.list_documents(tenant_id=tenant_id, collection_id=effective_collection)
+        if Path(record.source_path) == path and record.source_type == source_type
+    ]
+    for record in existing:
+        store_ctx.stores.doc_store.delete_document(record.doc_id, tenant_id=tenant_id)
+
+    from agentic_chatbot_next.rag import ingest_paths  # noqa: PLC0415
+
+    doc_ids = ingest_paths(
+        store_ctx.settings,
+        store_ctx.stores,
+        [path],
+        source_type=source_type,
+        tenant_id=tenant_id,
+        collection_id=effective_collection,
+    )
+    console.print(
+        json.dumps(
+            {
+                "deleted_doc_ids": [record.doc_id for record in existing],
+                "ingested_doc_ids": doc_ids,
+                "collection_id": effective_collection,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("delete-document")
+def delete_document(
+    doc_id: str = typer.Argument(...),
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+):
+    """Delete one indexed document and its chunks from the database."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    tenant_id = store_ctx.settings.default_tenant_id
+    record = store_ctx.stores.doc_store.get_document(doc_id, tenant_id=tenant_id)
+    if record is None:
+        console.print(json.dumps({"deleted": False, "doc_id": doc_id, "reason": "not_found"}, indent=2))
+        raise typer.Exit(code=1)
+    store_ctx.stores.doc_store.delete_document(doc_id, tenant_id=tenant_id)
+    console.print(
+        json.dumps(
+            {
+                "deleted": True,
+                "doc_id": doc_id,
+                "title": record.title,
+                "collection_id": record.collection_id,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("index-skills")
+def index_skills(dotenv: Optional[str] = typer.Option(None, "--dotenv")):
+    """Index repo-authored skill packs into the DB-backed skill store."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    from agentic_chatbot_next.rag import SkillIndexSync  # noqa: PLC0415
+
+    result = SkillIndexSync(store_ctx.settings, store_ctx.stores).sync(
+        tenant_id=store_ctx.settings.default_tenant_id,
+    )
+    console.print(json.dumps(result, indent=2, ensure_ascii=False)[:6000])
+
+
+@app.command("list-skills")
+def list_skills(
+    agent_scope: str = typer.Option("", "--agent-scope"),
+    enabled_only: bool = typer.Option(False, "--enabled-only"),
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+):
+    """List DB-indexed skill packs."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    records = store_ctx.stores.skill_store.list_skill_packs(
+        tenant_id=store_ctx.settings.default_tenant_id,
+        agent_scope=agent_scope,
+        enabled_only=enabled_only,
+    )
+    console.print(
+        json.dumps(
+            [
+                {
+                    "skill_id": record.skill_id,
+                    "name": record.name,
+                    "agent_scope": record.agent_scope,
+                    "tool_tags": record.tool_tags,
+                    "task_tags": record.task_tags,
+                    "version": record.version,
+                    "enabled": record.enabled,
+                    "source_path": record.source_path,
+                }
+                for record in records
+            ],
+            indent=2,
+            ensure_ascii=False,
+        )[:6000]
+    )
+
+
+@app.command("inspect-skill")
+def inspect_skill(
+    skill_id: str = typer.Argument(...),
+    dotenv: Optional[str] = typer.Option(None, "--dotenv"),
+):
+    """Show one indexed skill pack and its stored chunks."""
+
+    store_ctx = _make_store_context_or_exit(dotenv)
+    record = store_ctx.stores.skill_store.get_skill_pack(
+        skill_id,
+        tenant_id=store_ctx.settings.default_tenant_id,
+    )
+    if record is None:
+        console.print(json.dumps({"found": False, "skill_id": skill_id}, indent=2))
+        raise typer.Exit(code=1)
+    chunks = store_ctx.stores.skill_store.get_skill_chunks(
+        skill_id,
+        tenant_id=store_ctx.settings.default_tenant_id,
+    )
+    console.print(
+        json.dumps(
+            {
+                "found": True,
+                "record": {
+                    "skill_id": record.skill_id,
+                    "name": record.name,
+                    "agent_scope": record.agent_scope,
+                    "tool_tags": record.tool_tags,
+                    "task_tags": record.task_tags,
+                    "version": record.version,
+                    "enabled": record.enabled,
+                    "source_path": record.source_path,
+                    "description": record.description,
+                },
+                "chunks": chunks,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )[:8000]
+    )
+
+
 @app.command()
 def reset_indexes(
     dotenv: Optional[str] = typer.Option(None, "--dotenv"),
     confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
 ):
-    """Truncate all indexed data from PostgreSQL (documents, chunks, memory)."""
+    """Truncate all indexed data from PostgreSQL (documents, chunks, memory, skills)."""
 
     settings = load_settings(dotenv)
 
     if not confirm:
         typer.confirm(
-            "This will DELETE all documents, chunks, and memory from the database. Continue?",
+            "This will DELETE all documents, chunks, memory, and indexed skills from the database. Continue?",
             abort=True,
         )
 
@@ -271,10 +535,10 @@ def reset_indexes(
     init_pool(settings)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE memory, chunks, documents RESTART IDENTITY CASCADE")
+            cur.execute("TRUNCATE TABLE memory, skill_chunks, skills, chunks, documents RESTART IDENTITY CASCADE")
         conn.commit()
 
-    console.print("All indexes cleared. Run init-kb or chat to rebuild.")
+    console.print("All indexes cleared. Run sync-kb and index-skills to rebuild.")
 
 
 @app.command()
@@ -310,35 +574,54 @@ def migrate_embedding_dim(
         )
 
     from agentic_chatbot.db.connection import apply_schema, get_conn, init_pool
-    from agentic_chatbot.db.vector_schema import get_chunks_embedding_dim, set_chunks_embedding_dim
+    from agentic_chatbot.db.vector_schema import (
+        get_chunks_embedding_dim,
+        get_skill_chunks_embedding_dim,
+        set_chunks_embedding_dim,
+        set_skill_chunks_embedding_dim,
+    )
 
     effective_settings = settings if desired_dim == settings.embedding_dim else replace(settings, embedding_dim=desired_dim)
 
     apply_schema(effective_settings)
     init_pool(effective_settings)
-    before_dim = get_chunks_embedding_dim()
-    if before_dim is None:
+    before_chunks_dim = get_chunks_embedding_dim()
+    before_skill_chunks_dim = get_skill_chunks_embedding_dim()
+    if before_chunks_dim is None or before_skill_chunks_dim is None:
+        missing = []
+        if before_chunks_dim is None:
+            missing.append("chunks.embedding")
+        if before_skill_chunks_dim is None:
+            missing.append("skill_chunks.embedding")
         console.print(
-            "[red]Unable to detect chunks.embedding dimension. Ensure schema is applied and the chunks table exists.[/red]"
+            "[red]Unable to detect "
+            + ", ".join(missing)
+            + " dimension(s). Ensure schema is applied and the required tables exist.[/red]"
         )
         raise typer.Exit(code=1)
-    changed = set_chunks_embedding_dim(desired_dim)
+    changed_chunks = set_chunks_embedding_dim(desired_dim)
+    changed_skill_chunks = set_skill_chunks_embedding_dim(desired_dim)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             if reset_memory:
-                cur.execute("TRUNCATE TABLE memory, chunks, documents RESTART IDENTITY CASCADE")
+                cur.execute("TRUNCATE TABLE memory, skill_chunks, skills, chunks, documents RESTART IDENTITY CASCADE")
             else:
-                cur.execute("TRUNCATE TABLE chunks, documents RESTART IDENTITY CASCADE")
+                cur.execute("TRUNCATE TABLE skill_chunks, skills, chunks, documents RESTART IDENTITY CASCADE")
         conn.commit()
 
     # Recreate dropped vector index(es) if the embedding column type was altered.
     apply_schema(effective_settings)
 
-    after_dim = get_chunks_embedding_dim()
+    after_chunks_dim = get_chunks_embedding_dim()
+    after_skill_chunks_dim = get_skill_chunks_embedding_dim()
     console.print(
         "Embedding schema alignment complete "
-        f"(before={before_dim}, after={after_dim}, schema_changed={'yes' if changed else 'no'})."
+        "(chunks: "
+        f"{before_chunks_dim}->{after_chunks_dim}, "
+        "skill_chunks: "
+        f"{before_skill_chunks_dim}->{after_skill_chunks_dim}, "
+        f"schema_changed={'yes' if changed_chunks or changed_skill_chunks else 'no'})."
     )
 
     if desired_dim != settings.embedding_dim:
@@ -348,12 +631,28 @@ def migrate_embedding_dim(
         )
 
     if reindex_kb:
-        bot = _build_bot_or_exit(effective_settings)
+        store_ctx = _build_store_context_or_exit(effective_settings)
         tenant_id = effective_settings.default_tenant_id
-        kb_docs = bot.ctx.stores.doc_store.list_documents(source_type="kb", tenant_id=tenant_id)
-        console.print(f"KB reindex complete. Indexed KB documents: {len(kb_docs)}")
+        from agentic_chatbot_next.rag import SkillIndexSync, ingest_paths  # noqa: PLC0415
+
+        kb_paths = sorted(Path(effective_settings.kb_dir).glob("*"))
+        ingest_paths(
+            effective_settings,
+            store_ctx.stores,
+            kb_paths,
+            source_type="kb",
+            tenant_id=tenant_id,
+            collection_id=effective_settings.default_collection_id,
+        )
+        SkillIndexSync(effective_settings, store_ctx.stores).sync(tenant_id=tenant_id)
+        kb_docs = store_ctx.stores.doc_store.list_documents(
+            source_type="kb",
+            tenant_id=tenant_id,
+            collection_id=effective_settings.default_collection_id,
+        )
+        console.print(f"Reindex complete. Demo KB documents: {len(kb_docs)}; skill packs re-synced.")
     else:
-        console.print("Skipped KB reindex (--skip-reindex-kb). Run `python run.py init-kb` when ready.")
+        console.print("Skipped KB reindex (--skip-reindex-kb). Run `python run.py sync-kb` and `python run.py index-skills` when ready.")
 
 
 @app.command()
@@ -474,23 +773,43 @@ def doctor(
                         details="Connected to PG_DSN successfully.",
                     )
                 )
-                db_dim = _read_chunks_embedding_dim(conn)
-                if db_dim is None:
+                chunks_dim = _read_table_embedding_dim(conn, "chunks")
+                skill_chunks_dim = _read_table_embedding_dim(conn, "skill_chunks")
+                if chunks_dim is None or skill_chunks_dim is None:
+                    missing = []
+                    if chunks_dim is None:
+                        missing.append("chunks.embedding")
+                    if skill_chunks_dim is None:
+                        missing.append("skill_chunks.embedding")
                     checks.append(
                         DoctorCheckResult(
                             name="Embedding schema alignment",
                             status="WARN",
-                            details="Could not detect chunks.embedding dimension (table may not exist yet).",
+                            details=(
+                                "Could not detect "
+                                + ", ".join(missing)
+                                + " dimension(s) (table may not exist yet)."
+                            ),
                             remediation="Run `python run.py migrate` first, then rerun doctor.",
                         )
                     )
-                elif db_dim != settings.embedding_dim:
+                elif chunks_dim != settings.embedding_dim or skill_chunks_dim != settings.embedding_dim:
+                    mismatches = []
+                    if chunks_dim != settings.embedding_dim:
+                        mismatches.append(
+                            f"chunks.embedding is vector({chunks_dim})"
+                        )
+                    if skill_chunks_dim != settings.embedding_dim:
+                        mismatches.append(
+                            f"skill_chunks.embedding is vector({skill_chunks_dim})"
+                        )
                     checks.append(
                         DoctorCheckResult(
                             name="Embedding schema alignment",
                             status="FAIL",
                             details=(
-                                f"chunks.embedding is vector({db_dim}) but EMBEDDING_DIM={settings.embedding_dim}."
+                                "; ".join(mismatches)
+                                + f" but EMBEDDING_DIM={settings.embedding_dim}."
                             ),
                             remediation="Run `python run.py migrate-embedding-dim --yes` to realign and rebuild vectors.",
                         )
@@ -500,7 +819,10 @@ def doctor(
                         DoctorCheckResult(
                             name="Embedding schema alignment",
                             status="PASS",
-                            details=f"chunks.embedding dimension matches settings ({db_dim}).",
+                            details=(
+                                "chunks.embedding and skill_chunks.embedding dimensions match "
+                                f"settings ({chunks_dim})."
+                            ),
                         )
                     )
         except Exception as exc:  # pragma: no cover - environment dependent
@@ -553,18 +875,46 @@ def doctor(
         )
     else:
         url = settings.ollama_base_url.rstrip("/") + "/api/tags"
+        required_models = _selected_ollama_models(settings)
         try:
             req = Request(url, method="GET")
             with urlopen(req, timeout=timeout_seconds) as resp:
                 code = int(resp.getcode() or 0)
+                body = resp.read().decode("utf-8")
             if 200 <= code < 300:
-                checks.append(
-                    DoctorCheckResult(
-                        name="Ollama API reachability",
-                        status="PASS",
-                        details=f"HTTP {code} from {url}.",
+                payload = json.loads(body or "{}")
+                available_models = {
+                    str(item.get("name")).strip()
+                    for item in payload.get("models", [])
+                    if isinstance(item, dict) and item.get("name")
+                }
+                missing_models = sorted(set(required_models.values()) - available_models)
+                if missing_models:
+                    checks.append(
+                        DoctorCheckResult(
+                            name="Ollama API reachability",
+                            status="FAIL",
+                            details=(
+                                f"HTTP {code} from {url}, but missing configured Ollama model(s): "
+                                f"{', '.join(missing_models)}."
+                            ),
+                            remediation=(
+                                "Pull or create the missing Ollama models, or update the "
+                                "OLLAMA_*_MODEL settings to models available at OLLAMA_BASE_URL."
+                            ),
+                        )
                     )
-                )
+                else:
+                    checks.append(
+                        DoctorCheckResult(
+                            name="Ollama API reachability",
+                            status="PASS",
+                            details=(
+                                f"HTTP {code} from {url}. Available configured models: "
+                                f"{', '.join(sorted(set(required_models.values())))}."
+                            ),
+                        )
+                    )
             else:
                 checks.append(
                     DoctorCheckResult(
@@ -574,6 +924,15 @@ def doctor(
                         remediation="Ensure Ollama is running and OLLAMA_BASE_URL is correct.",
                     )
                 )
+        except json.JSONDecodeError as exc:  # pragma: no cover - environment dependent
+            checks.append(
+                DoctorCheckResult(
+                    name="Ollama API reachability",
+                    status="FAIL",
+                    details=f"Invalid JSON from {url}: {exc}",
+                    remediation="Ensure OLLAMA_BASE_URL points to a working Ollama API endpoint.",
+                )
+            )
         except URLError as exc:  # pragma: no cover - environment dependent
             checks.append(
                 DoctorCheckResult(

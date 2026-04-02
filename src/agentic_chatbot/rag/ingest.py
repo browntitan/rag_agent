@@ -137,6 +137,8 @@ def _split_with_structure(
 def _build_chunk_records(
     chunks: List[Document],
     doc_id: str,
+    *,
+    collection_id: str,
 ) -> List[ChunkRecord]:
     records: List[ChunkRecord] = []
     for i, ch in enumerate(chunks):
@@ -149,6 +151,7 @@ def _build_chunk_records(
             ChunkRecord(
                 chunk_id=chunk_id,
                 doc_id=doc_id,
+                collection_id=collection_id,
                 chunk_index=chunk_index,
                 content=ch.page_content,
                 chunk_type=str(meta.get("chunk_type", "general")),
@@ -172,6 +175,7 @@ def ingest_paths(
     *,
     source_type: str,
     tenant_id: str,
+    collection_id: str | None = None,
 ) -> List[str]:
     """Ingest files into PostgreSQL (chunks + documents tables).
 
@@ -185,6 +189,7 @@ def ingest_paths(
         )
 
     ingested_doc_ids: List[str] = []
+    effective_collection_id = collection_id or settings.default_collection_id
 
     for p in paths:
         p = Path(p)
@@ -223,13 +228,14 @@ def ingest_paths(
         structure = detect_structure(full_text)
 
         chunks = _split_with_structure(settings, raw_docs, structure)
-        chunk_records = _build_chunk_records(chunks, doc_id)
+        chunk_records = _build_chunk_records(chunks, doc_id, collection_id=effective_collection_id)
 
         # Persist parent doc row first (chunks.doc_id has FK -> documents.doc_id).
         stores.doc_store.upsert_document(
             DocumentRecord(
                 doc_id=doc_id,
                 tenant_id=tenant_id,
+                collection_id=effective_collection_id,
                 title=title,
                 source_type=source_type,
                 content_hash=file_hash,
@@ -256,13 +262,26 @@ def ingest_paths(
 
 def ensure_kb_indexed(settings: Settings, stores: KnowledgeStores, tenant_id: str) -> None:
     """Index the built-in KB documents if the documents table is empty for source_type='kb'."""
+    if not settings.seed_demo_kb_on_startup:
+        return
     if settings.object_store_backend != "local":
         raise NotImplementedError(
             f"OBJECT_STORE_BACKEND={settings.object_store_backend!r} is not implemented for KB indexing yet. "
             "Set OBJECT_STORE_BACKEND=local for now."
         )
-    kb_docs = stores.doc_store.list_documents(source_type="kb", tenant_id=tenant_id)
+    kb_docs = stores.doc_store.list_documents(
+        source_type="kb",
+        tenant_id=tenant_id,
+        collection_id=settings.default_collection_id,
+    )
     if kb_docs:
         return
     kb_paths = sorted(Path(settings.kb_dir).glob("*"))
-    ingest_paths(settings, stores, kb_paths, source_type="kb", tenant_id=tenant_id)
+    ingest_paths(
+        settings,
+        stores,
+        kb_paths,
+        source_type="kb",
+        tenant_id=tenant_id,
+        collection_id=settings.default_collection_id,
+    )

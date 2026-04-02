@@ -13,7 +13,8 @@ simple knowledge questions) with zero latency and cost.  This module adds a
    (so the system is never worse than before this file existed).
 
 The LLM also returns a ``suggested_agent`` hint that the orchestrator can
-pre-seed into the initial graph state, saving one supervisor routing loop.
+use to choose a runtime-native starting agent when the request clearly
+benefits from `coordinator` or `data_analyst`.
 
 Usage::
 
@@ -39,7 +40,7 @@ from agentic_chatbot.router.router import RouterDecision, route_message
 
 logger = logging.getLogger(__name__)
 
-_VALID_SUGGESTED_AGENTS = {"rag_agent", "utility_agent", "parallel_rag", "data_analyst", ""}
+_VALID_SUGGESTED_AGENTS = {"coordinator", "data_analyst", ""}
 
 # ---------------------------------------------------------------------------
 # LLM output schema
@@ -65,12 +66,10 @@ Classify the incoming user message as either BASIC or AGENT.
 - Asks for general-knowledge information not tied to a specific document
 - Is a simple conversational follow-up that was already answered
 
-## Also suggest the best starting specialist agent
-- rag_agent        — document Q&A, clause lookup, requirements extraction
-- utility_agent    — arithmetic calculations, list docs, memory recall
-- parallel_rag     — explicit side-by-side comparison of two or more documents
+## Also suggest the best starting runtime agent
+- coordinator      — multi-step research, comparisons, background or long-running work, verification-heavy tasks
 - data_analyst     — tabular data analysis (Excel, CSV), statistics, aggregations, pandas operations
-- (empty string)   — you are unsure; let the supervisor decide
+- (empty string)   — general agent is sufficient
 """
 
 _ROUTER_HUMAN_TEMPLATE = """\
@@ -91,7 +90,7 @@ class LLMRouterOutput(BaseModel):
     suggested_agent: str = Field(
         default="",
         description=(
-            "Best starting specialist agent: 'rag_agent' | 'utility_agent' | 'parallel_rag' | 'data_analyst' | ''"
+            "Best starting runtime agent: 'coordinator' | 'data_analyst' | ''"
         ),
     )
 
@@ -156,11 +155,12 @@ def route_message_hybrid(
         )
 
     if has_attachments:
+        suggested = "coordinator" if any(token in user_text.lower() for token in ("compare", "difference", "research", "analyze")) else ""
         return RouterDecision(
             route="AGENT",
             confidence=1.0,
             reasons=["attachments_present"],
-            suggested_agent="rag_agent",
+            suggested_agent=suggested,
             router_method="deterministic",
         )
 

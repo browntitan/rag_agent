@@ -34,6 +34,15 @@ def _ensure_system(messages: List[Any], system_prompt: str) -> List[Any]:
     return list(messages)
 
 
+def _has_latest_user_message(messages: List[Any], user_text: str) -> bool:
+    if not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, HumanMessage):
+        return False
+    return str(getattr(last, "content", "") or "").strip() == user_text.strip()
+
+
 def run_general_agent(
     chat_llm: Any,
     *,
@@ -57,7 +66,8 @@ def run_general_agent(
 
     effective_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
     msgs = _ensure_system(messages, effective_prompt)
-    msgs.append(HumanMessage(content=user_text))
+    if not _has_latest_user_message(msgs, user_text):
+        msgs.append(HumanMessage(content=user_text))
 
     # ------------------------------------------------------------------
     # Check tool-calling support.  Some model wrappers raise on bind_tools;

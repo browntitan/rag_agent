@@ -13,6 +13,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE TABLE IF NOT EXISTS documents (
     doc_id             TEXT PRIMARY KEY,
     tenant_id          TEXT NOT NULL DEFAULT 'local-dev',
+    collection_id      TEXT NOT NULL DEFAULT 'default',
     title              TEXT NOT NULL,
     source_type        TEXT NOT NULL,           -- 'kb' | 'upload'
     source_path        TEXT,
@@ -28,12 +29,19 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 UPDATE documents SET tenant_id = 'local-dev' WHERE tenant_id IS NULL OR tenant_id = '';
 ALTER TABLE documents ALTER COLUMN tenant_id SET DEFAULT 'local-dev';
 ALTER TABLE documents ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS collection_id TEXT;
+UPDATE documents SET collection_id = 'default' WHERE collection_id IS NULL OR collection_id = '';
+ALTER TABLE documents ALTER COLUMN collection_id SET DEFAULT 'default';
+ALTER TABLE documents ALTER COLUMN collection_id SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS documents_tenant_idx
     ON documents(tenant_id);
 
 CREATE INDEX IF NOT EXISTS documents_tenant_source_idx
     ON documents(tenant_id, source_type);
+
+CREATE INDEX IF NOT EXISTS documents_tenant_collection_idx
+    ON documents(tenant_id, collection_id);
 
 -- ------------------------------------------------------------
 -- chunks: one row per document chunk
@@ -53,6 +61,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_id       TEXT PRIMARY KEY,
     doc_id         TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
     tenant_id      TEXT NOT NULL DEFAULT 'local-dev',
+    collection_id  TEXT NOT NULL DEFAULT 'default',
     chunk_index    INTEGER NOT NULL,
     page_number    INTEGER,
     clause_number  TEXT,          -- e.g. '3', '3.2', '10.1.4'
@@ -70,6 +79,12 @@ SET tenant_id = COALESCE((SELECT d.tenant_id FROM documents d WHERE d.doc_id = c
 WHERE c.tenant_id IS NULL OR c.tenant_id = '';
 ALTER TABLE chunks ALTER COLUMN tenant_id SET DEFAULT 'local-dev';
 ALTER TABLE chunks ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS collection_id TEXT;
+UPDATE chunks c
+SET collection_id = COALESCE((SELECT d.collection_id FROM documents d WHERE d.doc_id = c.doc_id), 'default')
+WHERE c.collection_id IS NULL OR c.collection_id = '';
+ALTER TABLE chunks ALTER COLUMN collection_id SET DEFAULT 'default';
+ALTER TABLE chunks ALTER COLUMN collection_id SET NOT NULL;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS chunks_doc_id_idx
@@ -77,6 +92,9 @@ CREATE INDEX IF NOT EXISTS chunks_doc_id_idx
 
 CREATE INDEX IF NOT EXISTS chunks_tenant_doc_idx
     ON chunks(tenant_id, doc_id);
+
+CREATE INDEX IF NOT EXISTS chunks_tenant_collection_idx
+    ON chunks(tenant_id, collection_id);
 
 -- HNSW can be created on an empty table (unlike IVFFlat)
 -- m=16, ef_construction=64 are conservative defaults; tune for your dataset size
@@ -93,6 +111,52 @@ CREATE INDEX IF NOT EXISTS chunks_chunk_type_idx
 CREATE INDEX IF NOT EXISTS chunks_clause_number_idx
     ON chunks(tenant_id, doc_id, clause_number)
     WHERE clause_number IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- skills: skill-pack metadata indexed separately from KB docs
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS skills (
+    skill_id      TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL DEFAULT 'local-dev',
+    name          TEXT NOT NULL,
+    agent_scope   TEXT NOT NULL,
+    tool_tags     TEXT[] DEFAULT '{}'::TEXT[],
+    task_tags     TEXT[] DEFAULT '{}'::TEXT[],
+    version       TEXT NOT NULL DEFAULT '1',
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    source_path   TEXT,
+    checksum      TEXT NOT NULL,
+    description   TEXT DEFAULT '',
+    updated_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS skills_tenant_scope_idx
+    ON skills(tenant_id, agent_scope);
+
+CREATE INDEX IF NOT EXISTS skills_enabled_idx
+    ON skills(tenant_id, enabled);
+
+-- ------------------------------------------------------------
+-- skill_chunks: retrieval surface for skill-pack chunks
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS skill_chunks (
+    skill_chunk_id TEXT PRIMARY KEY,
+    skill_id       TEXT NOT NULL REFERENCES skills(skill_id) ON DELETE CASCADE,
+    tenant_id      TEXT NOT NULL DEFAULT 'local-dev',
+    chunk_index    INTEGER NOT NULL,
+    content        TEXT NOT NULL,
+    embedding      vector(__EMBEDDING_DIM__)
+);
+
+CREATE INDEX IF NOT EXISTS skill_chunks_skill_idx
+    ON skill_chunks(skill_id);
+
+CREATE INDEX IF NOT EXISTS skill_chunks_tenant_idx
+    ON skill_chunks(tenant_id);
+
+CREATE INDEX IF NOT EXISTS skill_chunks_embedding_hnsw_idx
+    ON skill_chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 
 -- ------------------------------------------------------------
 -- memory: persistent cross-turn key-value store per tenant+session

@@ -1,42 +1,38 @@
-# Router rubric
+# Router Rubric
 
-The router produces one of two routes:
+The live router returns one of two routes:
 
-- `BASIC` — plain LLM call (`run_basic_chat`), no tools.
-- `AGENT` — multi-agent supervisor graph (with fallback to legacy `GeneralAgent` if graph setup fails).
+- `BASIC`
+- `AGENT`
 
-The router is intentionally deterministic and cheap.
+## Live implementation
 
-## Inputs used
+- deterministic rules: `src/agentic_chatbot_next/router/router.py`
+- hybrid LLM escalation: `src/agentic_chatbot_next/router/llm_router.py`
+- initial-agent selection: `src/agentic_chatbot_next/router/policy.py`
 
-- `user_text`
-- `has_attachments` (bool)
-- `explicit_force_agent` (bool, from CLI `--force-agent`)
+## Current agent hints
 
-## Hard rules (always AGENT)
+The router may suggest:
 
-1) Attachments present
-- Upload turns should use the agent path and grounding/citations.
+- `coordinator`
+- `data_analyst`
+- `""`
 
-2) Tool / multi-step verbs
-- e.g. "search", "look up", "calculate", "open file", "summarize this PDF", "compare and recommend"
+If no hint is returned, AGENT turns normally start in `general`.
 
-3) Citations / grounding requested
-- e.g. "cite", "sources", "according to", "evidence", "grounded"
+## Hard AGENT signals
 
-4) High-stakes topic hints
-- legal, medical, financial, security/compliance
+- attachments or uploads
+- search / retrieval / citation requests
+- document comparison
+- high-stakes domains
+- spreadsheet / CSV / pandas style requests
+- clear multi-step workflows
 
-## Additional heuristic
+## Typical BASIC signals
 
-- Very long input (`len(user_text) > 600`) routes to `AGENT`.
-
-## Prefer BASIC when
-
-- no attachments
-- no tool-like intent
-- low complexity, general knowledge / conversational
-
-## Where this is implemented
-
-See `src/agentic_chatbot/router/router.py`.
+- greetings
+- small talk
+- lightweight general-knowledge questions
+- conversational follow-ups that do not need tools

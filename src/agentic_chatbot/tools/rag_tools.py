@@ -202,6 +202,44 @@ def make_all_rag_tools(
         return json.dumps([_chunk_to_dict(r) for r in unique[:max_out]])
 
     # ------------------------------------------------------------------ #
+    #  3b. search_collection                                              #
+    # ------------------------------------------------------------------ #
+    @tool
+    def search_collection(collection_id: str, query: str, strategy: str = "hybrid") -> str:
+        """Search across one named collection in the DB-backed knowledge base."""
+        results = []
+        if strategy in ("vector", "hybrid"):
+            results.extend(
+                stores.chunk_store.vector_search(
+                    query,
+                    top_k=top_k_vector,
+                    collection_id_filter=collection_id,
+                    tenant_id=tenant_id,
+                )
+            )
+        if strategy in ("keyword", "hybrid"):
+            results.extend(
+                stores.chunk_store.keyword_search(
+                    query,
+                    top_k=top_k_keyword,
+                    collection_id_filter=collection_id,
+                    tenant_id=tenant_id,
+                )
+            )
+
+        seen_ids: set = set()
+        unique = []
+        for result in results:
+            chunk_id = (result.doc.metadata or {}).get("chunk_id", "")
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                unique.append(result)
+
+        unique.sort(key=lambda item: item.score, reverse=True)
+        max_out = min(80, top_k_vector + top_k_keyword)
+        return json.dumps([_chunk_to_dict(item) for item in unique[:max_out]])
+
+    # ------------------------------------------------------------------ #
     #  4. extract_clauses                                                  #
     # ------------------------------------------------------------------ #
     @tool
@@ -246,6 +284,11 @@ def make_all_rag_tools(
                 "outline": [],
             })
         return json.dumps({"doc_id": doc_id, "outline": outline})
+
+    @tool
+    def fetch_document_outline(doc_id: str) -> str:
+        """Alias for list_document_structure with a planner-executor oriented name."""
+        return list_document_structure.invoke({"doc_id": doc_id})
 
     # ------------------------------------------------------------------ #
     #  6. extract_requirements                                             #
@@ -343,7 +386,40 @@ def make_all_rag_tools(
         })
 
     # ------------------------------------------------------------------ #
-    #  9-11. Scratchpad tools                                              #
+    #  9. fetch_chunk_window                                              #
+    # ------------------------------------------------------------------ #
+    @tool
+    def fetch_chunk_window(chunk_id: str, before: int = 1, after: int = 1) -> str:
+        """Fetch a chunk and its neighboring chunks by chunk_index window."""
+        center = stores.chunk_store.get_chunk_by_id(chunk_id, tenant_id=tenant_id)
+        if center is None:
+            return json.dumps({"error": f"Chunk '{chunk_id}' not found."})
+        start = max(0, center.chunk_index - max(0, before))
+        end = center.chunk_index + max(0, after)
+        window = stores.chunk_store.get_chunks_by_index_range(
+            center.doc_id,
+            start,
+            end,
+            tenant_id=tenant_id,
+        )
+        return json.dumps(
+            {
+                "doc_id": center.doc_id,
+                "center_chunk_id": center.chunk_id,
+                "chunks": [_chunk_to_dict(chunk) for chunk in window],
+            }
+        )
+
+    # ------------------------------------------------------------------ #
+    #  10. list_collections                                               #
+    # ------------------------------------------------------------------ #
+    @tool
+    def list_collections() -> str:
+        """List all collection IDs currently stored for this tenant."""
+        return json.dumps(stores.doc_store.list_collections(tenant_id=tenant_id))
+
+    # ------------------------------------------------------------------ #
+    #  11-13. Scratchpad tools                                            #
     # ------------------------------------------------------------------ #
     @tool
     def scratchpad_write(key: str, value: str) -> str:
@@ -375,10 +451,15 @@ def make_all_rag_tools(
 
     # skills search — lets the agent look up operational guidance at runtime
     skills_search = None
+    skill_context_loader = None
     if settings is not None:
         try:
-            from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
-            skills_search = make_skills_search_tool(settings)
+            from agentic_chatbot.tools.skills_search_tool import (  # noqa: PLC0415
+                make_load_skill_context_tool,
+                make_skills_search_tool,
+            )
+            skills_search = make_skills_search_tool(settings, stores=stores, session=session)
+            skill_context_loader = make_load_skill_context_tool(settings, stores, session=session)
         except Exception as e:
             logger.warning("Could not build search_skills tool: %s", e)
 
@@ -386,15 +467,21 @@ def make_all_rag_tools(
         resolve_document,
         search_document,
         search_all_documents,
+        search_collection,
         extract_clauses,
         list_document_structure,
+        fetch_document_outline,
         extract_requirements,
         compare_clauses,
         diff_documents,
+        fetch_chunk_window,
+        list_collections,
         scratchpad_write,
         scratchpad_read,
         scratchpad_list,
     ]
     if skills_search is not None:
         tools.append(skills_search)
+    if skill_context_loader is not None:
+        tools.append(skill_context_loader)
     return tools

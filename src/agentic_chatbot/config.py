@@ -76,6 +76,10 @@ class Settings:
     uploads_dir: Path
     kb_source_uri: str
     uploads_source_uri: str
+    default_collection_id: str
+    skill_packs_dir: Path
+    runtime_dir: Path
+    agents_dir: Path
 
     # --- Prompt/skills locations ---
     skills_dir: Path
@@ -86,16 +90,16 @@ class Settings:
     supervisor_agent_skills_path: Path
     utility_agent_skills_path: Path
     basic_chat_skills_path: Path
+    planner_agent_skills_path: Path
+    finalizer_agent_skills_path: Path
     judge_grading_prompt_path: Path
     judge_rewrite_prompt_path: Path
     grounded_answer_prompt_path: Path
     rag_synthesis_prompt_path: Path
-    parallel_rag_synthesis_prompt_path: Path
 
-    # --- Multi-agent graph ---
-    supervisor_max_loops: int        # env: SUPERVISOR_MAX_LOOPS (default: 5)
-    max_parallel_rag_workers: int    # env: MAX_PARALLEL_RAG_WORKERS (default: 4)
-    enable_parallel_rag: bool        # env: ENABLE_PARALLEL_RAG (default: True)
+    # --- Runtime compatibility (deprecated / ignored by live runtime) ---
+    agent_runtime_mode: str          # env: AGENT_RUNTIME_MODE
+    planner_max_tasks: int           # env: PLANNER_MAX_TASKS (default: 8)
 
     # --- Scratchpad ---
     clear_scratchpad_per_turn: bool  # wipe session.scratchpad after each turn
@@ -139,6 +143,16 @@ class Settings:
     # --- Session Workspace ---
     workspace_dir: Path                 # env: WORKSPACE_DIR (default: data/workspaces)
     workspace_session_ttl_hours: int    # env: WORKSPACE_SESSION_TTL_HOURS (default: 24; 0=keep forever)
+
+    # --- Skills retrieval / DB-first KB ---
+    seed_demo_kb_on_startup: bool       # env: SEED_DEMO_KB_ON_STARTUP (default: False)
+    skill_search_top_k: int             # env: SKILL_SEARCH_TOP_K (default: 4)
+    skill_context_max_chars: int        # env: SKILL_CONTEXT_MAX_CHARS (default: 4000)
+    runtime_job_retention_hours: int    # env: RUNTIME_JOB_RETENTION_HOURS (default: 168)
+    max_worker_concurrency: int         # env: MAX_WORKER_CONCURRENCY (default: 4)
+    enable_coordinator_mode: bool       # env: ENABLE_COORDINATOR_MODE (default: False)
+    runtime_events_enabled: bool        # env: RUNTIME_EVENTS_ENABLED (default: True)
+    agent_definitions_json: str         # env: AGENT_DEFINITIONS_JSON (deprecated / ignored by live runtime)
 
 
 def _getenv(name: str, default: str | None = None) -> str | None:
@@ -192,7 +206,7 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     skills_backend = str(_getenv("SKILLS_BACKEND", "local")).lower()
     prompts_backend = str(_getenv("PROMPTS_BACKEND", "local")).lower()
 
-    llm_provider = str(_getenv("LLM_PROVIDER", "azure")).lower()
+    llm_provider = str(_getenv("LLM_PROVIDER", "ollama")).lower()
     embeddings_provider = str(_getenv("EMBEDDINGS_PROVIDER", llm_provider)).lower()
     judge_provider = str(_getenv("JUDGE_PROVIDER", llm_provider)).lower()
 
@@ -257,13 +271,17 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
 
     # PostgreSQL
     pg_dsn = str(_getenv("PG_DSN", "postgresql://localhost:5432/ragdb"))
-    embedding_dim = _as_int("EMBEDDING_DIM", 1536)
+    embedding_dim = _as_int("EMBEDDING_DIM", 768)
 
     # Paths
     kb_dir = Path(_getenv("KB_DIR", str(data_dir / "kb")))
     uploads_dir = Path(_getenv("UPLOADS_DIR", str(data_dir / "uploads")))
     kb_source_uri = str(_getenv("KB_SOURCE_URI", f"file://{kb_dir}"))
     uploads_source_uri = str(_getenv("UPLOADS_SOURCE_URI", f"file://{uploads_dir}"))
+    default_collection_id = str(_getenv("DEFAULT_COLLECTION_ID", "default"))
+    skill_packs_dir = Path(_getenv("SKILL_PACKS_DIR", str(data_dir / "skill_packs")))
+    runtime_dir = Path(_getenv("RUNTIME_DIR", str(data_dir / "runtime")))
+    agents_dir = Path(_getenv("AGENTS_DIR", str(data_dir / "agents")))
 
     skills_dir = Path(_getenv("SKILLS_DIR", str(data_dir / "skills")))
     prompts_dir = Path(_getenv("PROMPTS_DIR", str(data_dir / "prompts")))
@@ -274,17 +292,17 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     supervisor_agent_skills_path = Path(_getenv("SUPERVISOR_AGENT_SKILLS_PATH", str(skills_dir / "supervisor_agent.md")))
     utility_agent_skills_path = Path(_getenv("UTILITY_AGENT_SKILLS_PATH", str(skills_dir / "utility_agent.md")))
     basic_chat_skills_path = Path(_getenv("BASIC_CHAT_SKILLS_PATH", str(skills_dir / "basic_chat.md")))
+    planner_agent_skills_path = Path(_getenv("PLANNER_AGENT_SKILLS_PATH", str(skills_dir / "planner_agent.md")))
+    finalizer_agent_skills_path = Path(_getenv("FINALIZER_AGENT_SKILLS_PATH", str(skills_dir / "finalizer_agent.md")))
 
     judge_grading_prompt_path = Path(_getenv("JUDGE_GRADING_PROMPT_PATH", str(prompts_dir / "judge_grading.txt")))
     judge_rewrite_prompt_path = Path(_getenv("JUDGE_REWRITE_PROMPT_PATH", str(prompts_dir / "judge_rewrite.txt")))
     grounded_answer_prompt_path = Path(_getenv("GROUNDED_ANSWER_PROMPT_PATH", str(prompts_dir / "grounded_answer.txt")))
     rag_synthesis_prompt_path = Path(_getenv("RAG_SYNTHESIS_PROMPT_PATH", str(prompts_dir / "rag_synthesis.txt")))
-    parallel_rag_synthesis_prompt_path = Path(_getenv("PARALLEL_RAG_SYNTHESIS_PROMPT_PATH", str(prompts_dir / "parallel_rag_synthesis.txt")))
 
-    # Multi-agent graph
-    supervisor_max_loops = _as_int("SUPERVISOR_MAX_LOOPS", 5)
-    max_parallel_rag_workers = _as_int("MAX_PARALLEL_RAG_WORKERS", 4)
-    enable_parallel_rag = _as_bool("ENABLE_PARALLEL_RAG", True)
+    # Runtime compatibility
+    agent_runtime_mode = str(_getenv("AGENT_RUNTIME_MODE", "") or "").lower()
+    planner_max_tasks = _as_int("PLANNER_MAX_TASKS", 8)
 
     # Scratchpad
     clear_scratchpad_per_turn = _as_bool("CLEAR_SCRATCHPAD_PER_TURN", True)
@@ -327,6 +345,14 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
     # Session Workspace
     workspace_dir = Path(_getenv("WORKSPACE_DIR", str(data_dir / "workspaces")))
     workspace_session_ttl_hours = _as_int("WORKSPACE_SESSION_TTL_HOURS", 24)
+    seed_demo_kb_on_startup = _as_bool("SEED_DEMO_KB_ON_STARTUP", False)
+    skill_search_top_k = _as_int("SKILL_SEARCH_TOP_K", 4)
+    skill_context_max_chars = _as_int("SKILL_CONTEXT_MAX_CHARS", 4000)
+    runtime_job_retention_hours = _as_int("RUNTIME_JOB_RETENTION_HOURS", 168)
+    max_worker_concurrency = _as_int("MAX_WORKER_CONCURRENCY", 4)
+    enable_coordinator_mode = _as_bool("ENABLE_COORDINATOR_MODE", False)
+    runtime_events_enabled = _as_bool("RUNTIME_EVENTS_ENABLED", True)
+    agent_definitions_json = str(_getenv("AGENT_DEFINITIONS_JSON", ""))
 
     # Ensure backend values are in allowed sets.
     if database_backend not in {"postgres"}:
@@ -339,9 +365,8 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         raise ValueError(f"Unsupported SKILLS_BACKEND={skills_backend!r}. Supported: local, s3, azure_blob")
     if prompts_backend not in {"local", "s3", "azure_blob"}:
         raise ValueError(f"Unsupported PROMPTS_BACKEND={prompts_backend!r}. Supported: local, s3, azure_blob")
-
     # Ensure base local directories exist.
-    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir, workspace_dir]:
+    for p in [data_dir, kb_dir, uploads_dir, skills_dir, prompts_dir, workspace_dir, skill_packs_dir, runtime_dir, agents_dir]:
         p.mkdir(parents=True, exist_ok=True)
 
     return Settings(
@@ -395,6 +420,10 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         uploads_dir=uploads_dir,
         kb_source_uri=kb_source_uri,
         uploads_source_uri=uploads_source_uri,
+        default_collection_id=default_collection_id,
+        skill_packs_dir=skill_packs_dir,
+        runtime_dir=runtime_dir,
+        agents_dir=agents_dir,
         skills_dir=skills_dir,
         prompts_dir=prompts_dir,
         shared_skills_path=shared_skills_path,
@@ -403,14 +432,14 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         supervisor_agent_skills_path=supervisor_agent_skills_path,
         utility_agent_skills_path=utility_agent_skills_path,
         basic_chat_skills_path=basic_chat_skills_path,
+        planner_agent_skills_path=planner_agent_skills_path,
+        finalizer_agent_skills_path=finalizer_agent_skills_path,
         judge_grading_prompt_path=judge_grading_prompt_path,
         judge_rewrite_prompt_path=judge_rewrite_prompt_path,
         grounded_answer_prompt_path=grounded_answer_prompt_path,
         rag_synthesis_prompt_path=rag_synthesis_prompt_path,
-        parallel_rag_synthesis_prompt_path=parallel_rag_synthesis_prompt_path,
-        supervisor_max_loops=supervisor_max_loops,
-        max_parallel_rag_workers=max_parallel_rag_workers,
-        enable_parallel_rag=enable_parallel_rag,
+        agent_runtime_mode=agent_runtime_mode,
+        planner_max_tasks=planner_max_tasks,
         clear_scratchpad_per_turn=clear_scratchpad_per_turn,
         ocr_enabled=ocr_enabled,
         ocr_language=ocr_language,
@@ -435,4 +464,12 @@ def load_settings(dotenv_path: str | None = None) -> Settings:
         data_analyst_skills_path=data_analyst_skills_path,
         workspace_dir=workspace_dir,
         workspace_session_ttl_hours=workspace_session_ttl_hours,
+        seed_demo_kb_on_startup=seed_demo_kb_on_startup,
+        skill_search_top_k=skill_search_top_k,
+        skill_context_max_chars=skill_context_max_chars,
+        runtime_job_retention_hours=runtime_job_retention_hours,
+        max_worker_concurrency=max_worker_concurrency,
+        enable_coordinator_mode=enable_coordinator_mode,
+        runtime_events_enabled=runtime_events_enabled,
+        agent_definitions_json=agent_definitions_json,
     )

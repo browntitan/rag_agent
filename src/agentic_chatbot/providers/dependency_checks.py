@@ -27,15 +27,33 @@ _MODULE_HINTS: Mapping[str, str] = {
     "langchain_openai": "python -m pip install langchain-openai",
 }
 
+_ALL_PROVIDER_CONTEXTS: Tuple[str, ...] = ("llm", "judge", "embeddings")
 
-def _required_module_map(settings: Settings) -> Dict[str, Set[str]]:
-    required: Dict[str, Set[str]] = {}
 
-    provider_by_context = {
+def _normalize_contexts(contexts: Iterable[str] | None) -> Tuple[str, ...]:
+    if contexts is None:
+        return _ALL_PROVIDER_CONTEXTS
+
+    normalized = tuple(dict.fromkeys(str(context).strip().lower() for context in contexts if str(context).strip()))
+    invalid = sorted(set(normalized) - set(_ALL_PROVIDER_CONTEXTS))
+    if invalid:
+        raise ValueError(f"Unsupported provider validation context(s): {', '.join(invalid)}")
+    return normalized or _ALL_PROVIDER_CONTEXTS
+
+
+def _provider_by_context(settings: Settings, contexts: Iterable[str] | None = None) -> Dict[str, str]:
+    selected = set(_normalize_contexts(contexts))
+    provider_map = {
         "llm": settings.llm_provider.lower(),
         "judge": settings.judge_provider.lower(),
         "embeddings": settings.embeddings_provider.lower(),
     }
+    return {context: provider for context, provider in provider_map.items() if context in selected}
+
+
+def _required_module_map(settings: Settings, contexts: Iterable[str] | None = None) -> Dict[str, Set[str]]:
+    required: Dict[str, Set[str]] = {}
+    provider_by_context = _provider_by_context(settings, contexts)
 
     for context, provider in provider_by_context.items():
         if provider == "ollama":
@@ -46,9 +64,9 @@ def _required_module_map(settings: Settings) -> Dict[str, Set[str]]:
     return required
 
 
-def validate_provider_dependencies(settings: Settings) -> List[DependencyIssue]:
+def validate_provider_dependencies(settings: Settings, contexts: Iterable[str] | None = None) -> List[DependencyIssue]:
     issues: List[DependencyIssue] = []
-    required = _required_module_map(settings)
+    required = _required_module_map(settings, contexts=contexts)
 
     for module_name, contexts in sorted(required.items()):
         if importlib.util.find_spec(module_name) is None:
@@ -73,15 +91,11 @@ def _is_valid_azure_endpoint(value: str) -> bool:
     return host.endswith(".openai.azure.com") or host.endswith(".openai.azure.us")
 
 
-def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIssue]:
+def validate_provider_configuration(settings: Settings, contexts: Iterable[str] | None = None) -> List[ProviderConfigIssue]:
     issues: List[ProviderConfigIssue] = []
-    provider_by_context = {
-        "llm": settings.llm_provider.lower(),
-        "judge": settings.judge_provider.lower(),
-        "embeddings": settings.embeddings_provider.lower(),
-    }
+    provider_by_context = _provider_by_context(settings, contexts)
 
-    if provider_by_context["embeddings"] == "nvidia":
+    if provider_by_context.get("embeddings") == "nvidia":
         issues.append(
             ProviderConfigIssue(
                 context="embeddings",
@@ -149,7 +163,7 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
                 )
             )
 
-    embed_provider = provider_by_context["embeddings"]
+    embed_provider = provider_by_context.get("embeddings")
     embed_deployment = (settings.azure_openai_embed_deployment or "").lower()
     if embed_provider == "azure" and "ada-002" in embed_deployment and settings.embedding_dim != 1536:
         issues.append(
@@ -192,7 +206,7 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
                 )
             )
 
-    if provider_by_context["llm"] == "nvidia" and not settings.nvidia_chat_model:
+    if provider_by_context.get("llm") == "nvidia" and not settings.nvidia_chat_model:
         issues.append(
             ProviderConfigIssue(
                 context="llm",
@@ -200,7 +214,7 @@ def validate_provider_configuration(settings: Settings) -> List[ProviderConfigIs
                 hint="Set NVIDIA_CHAT_MODEL in .env.",
             )
         )
-    if provider_by_context["judge"] == "nvidia" and not settings.nvidia_judge_model:
+    if provider_by_context.get("judge") == "nvidia" and not settings.nvidia_judge_model:
         issues.append(
             ProviderConfigIssue(
                 context="judge",
@@ -288,13 +302,13 @@ class ProviderConfigurationError(RuntimeError):
         super().__init__(format_provider_config_issues(self.issues))
 
 
-def raise_if_missing_provider_dependencies(settings: Settings) -> None:
-    issues = validate_provider_dependencies(settings)
+def raise_if_missing_provider_dependencies(settings: Settings, contexts: Iterable[str] | None = None) -> None:
+    issues = validate_provider_dependencies(settings, contexts=contexts)
     if issues:
         raise ProviderDependencyError(issues)
 
 
-def raise_if_invalid_provider_configuration(settings: Settings) -> None:
-    issues = validate_provider_configuration(settings)
+def raise_if_invalid_provider_configuration(settings: Settings, contexts: Iterable[str] | None = None) -> None:
+    issues = validate_provider_configuration(settings, contexts=contexts)
     if issues:
         raise ProviderConfigurationError(issues)

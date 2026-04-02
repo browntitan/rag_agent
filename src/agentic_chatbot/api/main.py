@@ -14,16 +14,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from agentic_chatbot.agents.orchestrator import ChatbotApp
-from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot.config import Settings, load_settings
-from agentic_chatbot.context import RequestContext, build_local_context
 from agentic_chatbot.providers import (
     ProviderConfigurationError,
     ProviderDependencyError,
     build_providers,
 )
-from agentic_chatbot.rag import ingest_paths
+from agentic_chatbot_next.app.api_adapter import ApiAdapter
+from agentic_chatbot_next.app.service import RuntimeService
+from agentic_chatbot_next.context import RequestContext, build_local_context
+from agentic_chatbot_next.rag import ingest_paths
+from agentic_chatbot_next.sandbox.workspace import SessionWorkspace
+from agentic_chatbot_next.session import ChatSession
 
 logger = logging.getLogger(__name__)
 _runtime_init_error_logged = False
@@ -58,7 +60,7 @@ class IngestDocumentsRequest(BaseModel):
 
 
 class Runtime:
-    def __init__(self, settings: Settings, bot: ChatbotApp):
+    def __init__(self, settings: Settings, bot: RuntimeService):
         self.settings = settings
         self.bot = bot
 
@@ -84,7 +86,7 @@ def _get_runtime() -> Runtime:
     )
     try:
         providers = build_providers(settings)
-        bot = ChatbotApp.create(settings, providers)
+        bot = ApiAdapter.create_service(settings, providers)
         return Runtime(settings=settings, bot=bot)
     except (ProviderDependencyError, ProviderConfigurationError) as exc:
         if not _runtime_init_error_logged:
@@ -345,29 +347,25 @@ def ingest_documents(
         tenant_id=ctx.tenant_id,
     )
 
-    # Copy ingested files into the active session workspace (if one exists).
-    # The workspace directory is keyed by conversation_id; it exists on disk
-    # only after a /v1/chat/completions turn has been processed for that session.
-    # This allows the data analyst to access uploaded files at /workspace/<filename>
-    # inside the Docker sandbox without needing a separate load_dataset call first.
-    ws_conversation_id = (
-        request.conversation_id
-        or x_conversation_id
-        or runtime.settings.default_conversation_id
-    )
-    ws_root = runtime.settings.workspace_dir / ws_conversation_id
+    # Copy ingested files into the active session workspace keyed by session_id.
+    # We proactively create the workspace so uploads are available to the data
+    # analyst at /workspace/<filename> even before the first chat turn runs.
+    ws_conversation_id = request.conversation_id or x_conversation_id or runtime.settings.default_conversation_id
+    ws_session_id = f"{ctx.tenant_id}:{ctx.user_id}:{ws_conversation_id}"
+    workspace = SessionWorkspace.for_session(ws_session_id, runtime.settings.workspace_dir)
+    workspace.open()
+    ws_root = workspace.root
     workspace_copies: List[str] = []
-    if ws_root.is_dir():
-        for p in valid_paths:
-            try:
-                shutil.copy2(p, ws_root / p.name)
-                workspace_copies.append(p.name)
-                logger.debug("ingest_documents: copied %s into workspace %s", p.name, ws_root)
-            except Exception as cp_exc:
-                logger.warning(
-                    "ingest_documents: could not copy %s to workspace %s: %s",
-                    p.name, ws_root, cp_exc,
-                )
+    for p in valid_paths:
+        try:
+            shutil.copy2(p, ws_root / p.name)
+            workspace_copies.append(p.name)
+            logger.debug("ingest_documents: copied %s into workspace %s", p.name, ws_root)
+        except Exception as cp_exc:
+            logger.warning(
+                "ingest_documents: could not copy %s to workspace %s: %s",
+                p.name, ws_root, cp_exc,
+            )
 
     result: Dict[str, Any] = {
         "object": "ingest.result",

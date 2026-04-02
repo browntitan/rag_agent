@@ -15,11 +15,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.tools import tool
 
 from agentic_chatbot.config import Settings
+from agentic_chatbot.rag.skill_index import SkillContextResolver
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ _ALL_SKILL_KEYS = [
     "data_analyst_agent",
     "supervisor_agent",
     "general_agent",
+    "planner_agent",
+    "finalizer_agent",
+    "verifier_agent",
     "basic_chat",
     "shared",
 ]
@@ -144,7 +148,20 @@ def _build_index(settings: Settings) -> List[_Section]:
     return sections
 
 
-def make_skills_search_tool(settings: Settings):
+def _agent_scope_from_filter(agent_filter: str) -> str:
+    mapping = {
+        "rag_agent": "rag",
+        "utility_agent": "utility",
+        "data_analyst_agent": "data_analyst",
+        "general_agent": "general",
+        "planner_agent": "planner",
+        "finalizer_agent": "finalizer",
+        "verifier_agent": "verifier",
+    }
+    return mapping.get(agent_filter.strip(), agent_filter.strip())
+
+
+def make_skills_search_tool(settings: Settings, *, stores: Any | None = None, session: Any | None = None):
     """Create a ``search_skills`` tool bound to the given settings.
 
     The skills index is built once when the tool is created.  Because
@@ -158,6 +175,7 @@ def make_skills_search_tool(settings: Settings):
         A LangChain tool the agent can call as ``search_skills(query=...)``.
     """
     index: List[_Section] = _build_index(settings)
+    resolver = SkillContextResolver(settings, stores) if stores is not None else None
 
     @tool
     def search_skills(query: str, agent_filter: str = "", top_k: int = 3) -> str:
@@ -174,7 +192,8 @@ def make_skills_search_tool(settings: Settings):
                           Example: "multi-sheet Excel inspection procedure"
             agent_filter: Optional. Restrict results to a specific skill file.
                           Values: "rag_agent", "data_analyst_agent", "utility_agent",
-                          "supervisor_agent", "general_agent". Leave empty to search all.
+                          "supervisor_agent", "general_agent", "planner_agent",
+                          "finalizer_agent", "verifier_agent". Leave empty to search all.
             top_k:        Maximum number of matching sections to return (default 3, max 5).
 
         Returns:
@@ -182,37 +201,43 @@ def make_skills_search_tool(settings: Settings):
             [agent > Section Heading].  Returns a "no results" message if nothing matches.
         """
         top_k = min(max(1, top_k), 5)
-        query_tokens = _tokenise(query)
 
+        if resolver is not None:
+            try:
+                context = resolver.resolve(
+                    query=query,
+                    tenant_id=getattr(session, "tenant_id", settings.default_tenant_id),
+                    agent_scope=_agent_scope_from_filter(agent_filter),
+                    top_k=top_k,
+                )
+                if context.matches:
+                    parts = []
+                    for match in context.matches[:top_k]:
+                        body = match.content
+                        if len(body) > 800:
+                            body = body[:800] + "\n...[truncated]"
+                        parts.append(f"[{match.name} | {match.skill_id} | {match.agent_scope}]\n{body}")
+                    return "\n\n---\n\n".join(parts)
+            except Exception as exc:
+                logger.warning("DB-backed search_skills failed, falling back to lexical index: %s", exc)
+
+        query_tokens = _tokenise(query)
         if not query_tokens:
             return "No results: query produced no searchable tokens."
 
-        # Filter by agent if requested
-        candidates = [
-            s for s in index
-            if not agent_filter or s.agent_key == agent_filter.strip()
-        ]
-
+        candidates = [s for s in index if not agent_filter or s.agent_key == agent_filter.strip()]
         if not candidates:
             return f"No sections found for agent_filter={agent_filter!r}."
 
-        # Score all candidates
-        scored: List[Tuple[float, _Section]] = [
-            (_score_section(s, query_tokens), s)
-            for s in candidates
-        ]
+        scored: List[Tuple[float, _Section]] = [(_score_section(s, query_tokens), s) for s in candidates]
         scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Take non-zero scoring sections
         top = [(score, sec) for score, sec in scored[:top_k] if score > 0]
 
         if not top:
-            # Fallback: substring match on query words
             query_lower = query.lower()
             fallback = [
                 (1.0, s) for s in candidates
-                if any(w in s.content.lower() or w in s.heading.lower()
-                       for w in query_lower.split())
+                if any(word in s.content.lower() or word in s.heading.lower() for word in query_lower.split())
             ][:top_k]
             if fallback:
                 top = fallback
@@ -222,10 +247,8 @@ def make_skills_search_tool(settings: Settings):
                     f"Try broader terms or remove agent_filter."
                 )
 
-        # Format output
         parts: List[str] = []
         for score, sec in top:
-            # Truncate very long sections to avoid flooding context
             body = sec.content
             if len(body) > 800:
                 body = body[:800] + "\n...[truncated]"
@@ -234,3 +257,23 @@ def make_skills_search_tool(settings: Settings):
         return "\n\n---\n\n".join(parts)
 
     return search_skills
+
+
+def make_load_skill_context_tool(settings: Settings, stores: Any, *, session: Any | None = None):
+    resolver = SkillContextResolver(settings, stores)
+
+    @tool
+    def load_skill_context(query: str, agent_scope: str = "rag", top_k: int = 3) -> str:
+        """Load a bounded block of DB-indexed skill guidance for a task or tool workflow."""
+
+        context = resolver.resolve(
+            query=query,
+            tenant_id=getattr(session, "tenant_id", settings.default_tenant_id),
+            agent_scope=agent_scope.strip() or "rag",
+            top_k=min(max(1, top_k), 6),
+        )
+        if not context.text:
+            return f"No indexed skill context found for query: {query!r}"
+        return context.text
+
+    return load_skill_context

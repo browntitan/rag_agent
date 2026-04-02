@@ -1,50 +1,68 @@
-# OpenAI-Compatible Agent Gateway
+# OpenAI-Compatible Gateway
 
-This project now includes a FastAPI gateway that exposes OpenAI-compatible endpoints in front of the existing agentic runtime.
+The live FastAPI gateway is `src/agentic_chatbot/api/main.py`.
 
-## Endpoints
+It exposes the next runtime through OpenAI-style endpoints without changing the internal
+runtime contracts.
 
+## Supported endpoints
+
+- `GET /health/live`
+- `GET /health/ready`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/ingest/documents`
 
-## Run
+## Live runtime binding
 
-```bash
-python run.py serve-api --host 0.0.0.0 --port 8000
+The gateway creates:
+
+- providers via `agentic_chatbot.providers`
+- a live `RuntimeService` via `agentic_chatbot_next.app.api_adapter.ApiAdapter`
+
+The gateway does not call the legacy runtime package directly.
+
+## Chat completions flow
+
+`POST /v1/chat/completions`:
+
+1. validates the requested gateway model id
+2. builds a local request context using `X-Conversation-ID`
+3. converts prior OpenAI-format messages into LangChain history
+4. creates a `ChatSession`
+5. calls `RuntimeService.process_turn(...)`
+6. wraps the returned assistant text back into OpenAI-compatible JSON or SSE chunks
+
+## Document ingest flow
+
+`POST /v1/ingest/documents`:
+
+1. resolves the request context
+2. ingests files through `agentic_chatbot_next.rag.ingest_paths(...)`
+3. opens the session workspace using the canonical session key
+4. copies ingested files into that workspace
+5. returns ingest metadata
+
+This keeps upload scope aligned with later data-analyst turns.
+
+## In-process usage
+
+Prefer `RuntimeService`, not `ChatbotApp.create(...)`.
+
+```python
+from agentic_chatbot.config import load_settings
+from agentic_chatbot.providers import build_providers
+from agentic_chatbot_next.app.service import RuntimeService
+
+settings = load_settings()
+providers = build_providers(settings)
+service = RuntimeService.create(settings, providers)
+session = RuntimeService.create_local_session(settings, conversation_id="my-chat-001")
+
+answer = service.process_turn(session, user_text="Summarize the auth policy.")
 ```
 
-If you use Docker Compose, the `app` service now starts this gateway automatically.
+## Compatibility note
 
-## Authentication
-
-The simplified gateway mode has no built-in auth on `/v1/*`.
-
-For production, protect it upstream using one of:
-
-- reverse proxy auth (for example Nginx/Traefik/OAuth2 proxy),
-- API gateway auth/policies,
-- private network-only exposure.
-
-## OpenWebUI integration
-
-1. Add a new OpenAI-compatible provider.
-2. Set Base URL to `http://<gateway-host>:8000/v1`.
-3. Use any API key value in UI if required by the client.
-4. Select model ID `enterprise-agent` (or `GATEWAY_MODEL_ID`).
-
-## AI SDK integration (Vercel)
-
-Point your chat route to the gateway's OpenAI-compatible endpoint.
-
-- Base URL: `http://<gateway-host>:8000/v1`
-- Model: `enterprise-agent`
-- Headers: optional `X-Conversation-ID`
-
-## Notes
-
-- Chat context in v1 is client-provided `messages` history.
-- CLI/demo compatibility is preserved through local defaults:
-  - `DEFAULT_TENANT_ID`
-  - `DEFAULT_USER_ID`
-  - `DEFAULT_CONVERSATION_ID`
+`ChatbotApp` still exists as a deprecated shim over `RuntimeService` for one compatibility
+window, but it is not the recommended in-process entrypoint anymore.

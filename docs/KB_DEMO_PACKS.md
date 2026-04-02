@@ -1,70 +1,43 @@
-# Demo Knowledge Base Packs
+# Demo KB Packs
 
-The repository now includes an expanded enterprise demo corpus designed to force multi-step tool behavior:
+`data/kb/` is demo seed content, not the primary operational source of truth.
 
-- document resolution from partial names
-- hybrid retrieval across long files
-- clause extraction and side-by-side clause comparison
-- requirements mining from SHALL/MUST/REQ language
-- parallel multi-document synthesis for executive decisions
+## Operational model
 
-## Long-Form Demo Pack
+- operational corpus: PostgreSQL
+- demo seed corpus: `data/kb/`
+- workspace files: `data/workspaces/`
+- runtime session/job state: `data/runtime/`
 
-Core showcase files:
+The next-runtime cutover did not change the KB storage model. It changed how live AGENT
+turns execute around that data.
 
-- `06_master_services_agreement_v1.md`
-- `07_master_services_agreement_v2.md`
-- `08_data_processing_addendum_global.md`
-- `09_ai_ops_control_standard.md`
-- `10_incident_communications_playbook.md`
-- `11_vendor_security_schedule.md`
+## When to use `data/kb`
 
-Existing baseline pack remains available:
+Use the bundled demo KB when you want:
 
-- product docs: `01_*` to `05_*`
-- runbooks: `runbook_*`
-- API references: `api_*`
+- local demos
+- regression scenarios
+- starter content for UI testing
 
-## Scenario-to-Pack Mapping
+Do not assume those files are already indexed in PostgreSQL until you explicitly sync them.
 
-Scenario definitions live in `data/demo/demo_scenarios.json` (v2 structured schema).
-
-- `utility_memory_finance_bootstrap`
-  - Primary docs: all indexed docs via `list_indexed_docs`
-  - Focus: utility + memory reliability
-- `rag_resolution_and_search_strategy`
-  - Primary docs: release notes, integrations, security/privacy
-  - Focus: resolve + search strategy switching
-- `rag_clause_navigation_and_extraction`
-  - Primary docs: `06_master_services_agreement_v1.md`
-  - Focus: structure scan + exact clause extraction
-- `rag_requirements_traceability`
-  - Primary docs: `09_ai_ops_control_standard.md`, `11_vendor_security_schedule.md`
-  - Focus: requirements extraction and filter refinement
-- `rag_structural_diff_contract_versions`
-  - Primary docs: `06_master_services_agreement_v1.md`, `07_master_services_agreement_v2.md`
-  - Focus: structural diff and change categorization
-- `rag_clause_compare_conflict_review`
-  - Primary docs: `06_master_services_agreement_v1.md`, `07_master_services_agreement_v2.md`
-  - Focus: clause-by-clause contradiction review
-- `parallel_rag_multi_doc_risk_board`
-  - Primary docs: `08_data_processing_addendum_global.md`, `09_ai_ops_control_standard.md`, `10_incident_communications_playbook.md`
-  - Focus: fan-out/fan-in synthesis across domains
-- `executive_due_diligence_grand_finale`
-  - Primary docs: `06_master_services_agreement_v2.md`, `08_data_processing_addendum_global.md`, `11_vendor_security_schedule.md`
-  - Focus: executive recommendation with evidence and budget math
-
-## Demo Runner
+## Common commands
 
 ```bash
-python run.py demo --list-scenarios
-python run.py demo --scenario utility_memory_finance_bootstrap --verify
-python run.py demo --scenario parallel_rag_multi_doc_risk_board --force-agent
-python run.py demo --scenario all --session-mode scenario --verify
+python run.py sync-kb
+python run.py init-kb
 ```
 
-Notes:
+Automatic startup seeding is still supported:
 
-- `--session-mode scenario` creates a fresh conversation context per scenario.
-- `--session-mode suite` reuses one session across the full run.
-- `--verify` prints heuristic `PASS/WARN/FAIL` checks per turn.
+```env
+SEED_DEMO_KB_ON_STARTUP=true
+```
+
+## Key distinction
+
+The demo KB is still content.
+
+The current runtime durability features such as transcripts, jobs, and notifications live
+under `data/runtime/*`, not under `data/kb/`.

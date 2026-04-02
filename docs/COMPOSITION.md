@@ -1,44 +1,50 @@
-# How techniques compose in an agentic chatbot
+# Composition
 
-A practical chatbot should not run every expensive technique on every turn.
+The live system is composed around `RuntimeService`.
 
-This repo uses a **composition-by-routing** approach:
+## Composition order
 
-1) Router decides `BASIC` vs `AGENT`
-2) `AGENT` runs a multi-agent supervisor graph (handoffs to specialist agents)
-3) If the graph cannot be built, fallback to legacy `GeneralAgent` tools (including `rag_agent_tool`)
-4) Uploads trigger ingestion + immediate RAG kickoff summary
+1. transport layer creates request/session scope
+2. `RuntimeService` prepares uploads, workspace, and route metadata
+3. `RuntimeKernel` turns the live session into persisted `SessionState`
+4. `AgentRegistry` selects the active `AgentDefinition`
+5. `QueryLoop` executes the selected agent mode
+6. tools, worker jobs, notifications, and memory operate inside that runtime context
 
-## Recommended defaults
+## Runtime layers
 
-- `BASIC` for:
-  - general knowledge
-  - small talk
+### Service layer
 
-- `AGENT` for:
-  - tasks requiring tools (math, memory, doc listing)
-  - anything needing grounded document evidence/citations
-  - multi-step requests
-  - spreadsheet/CSV analysis (routes to `data_analyst`)
+Owns:
 
-## How RAG is invoked
+- route selection
+- workspace open/copy behavior
+- upload summary kickoff
+- initial agent choice
 
-- **Primary path:** `rag_agent` is a specialist node in the supervisor graph (agent handoff).
-- **Fallback path:** `rag_agent_tool` is called by the legacy `GeneralAgent` as a tool.
-- **Upload kickoff:** orchestrator calls `run_rag_agent()` directly after ingest.
+### Kernel layer
 
-## How data analysis is invoked
+Owns:
 
-- **Supervisor handoff:** when the supervisor detects spreadsheet/data analysis intent it routes to `data_analyst`.
-- **Tool loop:** `data_analyst` uses `load_dataset` → `inspect_columns` → `execute_code` (Docker sandbox) → reflection.
-- **Graceful degradation:** if Docker is not running, `AgentRegistry` disables `data_analyst` at startup and the supervisor never routes to it.
+- persistence
+- events
+- jobs
+- coordinator orchestration
+- notification drain
 
-## Upload kickoff
+### Loop layer
 
-Uploads are a special case:
+Owns:
 
-- ingest immediately
-- run a grounded summary for the newly ingested docs
-- let the user ask follow-ups
+- prompt construction
+- direct execution by mode
+- tool-using react execution
+- file-memory context injection
+- skill-context injection
 
-This reduces friction and makes it obvious that the system is using the uploaded docs.
+## Persistence split
+
+- PostgreSQL: documents, chunks, skill embeddings
+- `data/runtime`: session/job state, transcripts, events, notifications
+- `data/workspaces`: sandbox-visible files
+- `data/memory`: file-backed durable memory

@@ -1,53 +1,76 @@
-# RAG tool contract
+# RAG Tool Contract
 
-`rag_agent_tool` wraps `run_rag_agent()` and returns the same stable contract schema.
+`rag_agent_tool` remains backward-compatible.
 
-Note: in Python, the tool function returns a dict. In tool-message logs this may appear serialized.
+It wraps `run_rag_agent()` and returns the same stable JSON contract used by the current
+live next runtime and its compatibility layers.
 
-## Input schema
+## Current positioning
 
-Arguments supported by `rag_agent_tool`:
+In the live runtime:
 
-- `query` (str) — user task/question
-- `conversation_context` (str) — optional disambiguation context
-- `preferred_doc_ids_csv` (str) — optional comma-separated doc IDs
-- `must_include_uploads` (bool)
-- `top_k_vector` (int)
-- `top_k_keyword` (int)
-- `max_retries` (int) — accepted for compatibility; currently not consumed by active runtime logic
-- `scratchpad_context_key` (str) — optional key from `session.scratchpad` to prepend context
+- `general` uses `rag_agent_tool` for grounded document work from the top-level ReAct loop
+- `verifier` can also use `rag_agent_tool`
+- `rag_worker` bypasses the wrapper and calls `run_rag_agent()` directly
 
-## Output schema
+So the contract remains central even though not every RAG invocation goes through the tool.
+
+## Input
+
+Supported arguments:
+
+- `query`
+- `conversation_context`
+- `preferred_doc_ids_csv`
+- `must_include_uploads`
+- `top_k_vector`
+- `top_k_keyword`
+- `max_retries`
+- `scratchpad_context_key`
+
+## Output
 
 ```json
 {
   "answer": "...",
   "citations": [
     {
-      "citation_id": "UPLOAD_abcd1234#chunk0003",
-      "doc_id": "UPLOAD_abcd1234",
-      "title": "my_doc.pdf",
-      "source_type": "upload",
-      "location": "page 2",
+      "citation_id": "...",
+      "doc_id": "...",
+      "title": "...",
+      "source_type": "...",
+      "location": "...",
       "snippet": "..."
     }
   ],
-  "used_citation_ids": ["UPLOAD_abcd1234#chunk0003"],
+  "used_citation_ids": ["..."],
   "confidence": 0.84,
   "retrieval_summary": {
     "query_used": "...",
     "steps": 3,
     "tool_calls_used": 5,
-    "tool_call_log": ["resolve_document({...})", "search_document({...})"],
+    "tool_call_log": [],
     "citations_found": 4
   },
-  "followups": ["..."],
+  "followups": [],
   "warnings": []
 }
 ```
 
-## Notes
+## Stability expectations
 
-- `confidence` is adjusted from `confidence_hint` and citation count.
-- If synthesis JSON parsing fails, answer falls back to raw text and adds `SYNTHESIS_JSON_PARSE_FAILED` to warnings.
-- The same output contract is used when `run_rag_agent()` is called by graph nodes (not only via tool wrapper).
+The runtime refactor did **not** change:
+
+- key names
+- citation object shape
+- confidence field
+- retrieval summary presence
+
+That stability is what lets the tool remain a safe interface for callers outside the
+specialist RAG worker path.
+
+## Related internal RAG tools
+
+The RAG engine still uses a richer internal specialist tool surface for retrieval,
+comparison, extraction, and skill lookup. Those tools improve execution quality but do not
+change the contract returned by `rag_agent_tool`.

@@ -42,22 +42,17 @@ logger = logging.getLogger(__name__)
 _DEFAULTS: Dict[str, str] = {
     "shared": "",
     "general_agent": (
-        "You are an agentic chatbot that can call tools to solve the user's request.\n"
-        "Your priorities are: (1) correct tool selection, (2) correct tool arguments, "
-        "(3) clear synthesis of tool results.\n\n"
+        "You are the default session agent for the hybrid runtime.\n\n"
         "Operating rules:\n"
-        "- When a task requires tools, use them. When it doesn't, answer directly.\n"
-        "- If multiple tools are needed, create a short numbered PLAN, then execute step-by-step.\n"
-        "- Use rag_agent_tool for questions about the KB, uploaded documents, policies, "
-        "contracts, requirements, runbooks, or anything that needs citations.\n"
-        "- The rag_agent_tool returns JSON: {answer, citations, used_citation_ids, confidence}. "
-        "Present the 'answer' field to the user with citations. Do NOT dump raw JSON.\n"
-        "- For multi-document tasks (compare, diff, find requirements), call rag_agent_tool with "
-        "a detailed query describing the full task. Pass preferred_doc_ids_csv to constrain scope.\n"
-        "- Use scratchpad_context_key to pass previous RAG findings as context into the next call.\n"
-        "- Use memory_save to persist important facts the user has confirmed across sessions.\n"
-        "- If tool output is insufficient, explain what is missing and ask a follow-up question.\n"
-        "- Keep the final answer concise and user-friendly.\n"
+        "- Solve straightforward requests directly in the current session whenever you can do so with your own tools.\n"
+        "- Delegate only when the task is better handled by a scoped worker or when the user clearly needs a longer-running workflow.\n"
+        "- For multi-step research, comparisons across multiple sources, background work, or specialist execution you cannot do directly, delegate to the coordinator with spawn_worker.\n"
+        "- Do not orchestrate multiple workers yourself. If the task needs planning, batching, or synthesis across workers, hand it to the coordinator.\n"
+        "- Use rag_agent_tool for indexed documents, uploaded files, contracts, policies, requirements, procedures, or anything that needs grounded citations.\n"
+        "- Present rag_agent_tool answers as user-facing prose, not raw JSON.\n"
+        "- Use calculator for arithmetic, list_indexed_docs for document discovery, and memory tools for persistent user-confirmed facts.\n"
+        "- Use search_skills when you need operating guidance for an unfamiliar case.\n"
+        "- Preserve citations, warnings, and uncertainty in the final answer.\n"
     ),
     "rag_agent": (
         "You are a specialist RAG (Retrieval-Augmented Generation) agent.\n\n"
@@ -82,10 +77,9 @@ _DEFAULTS: Dict[str, str] = {
         "10. Cite inline using (chunk_id) values from the tool results.\n"
     ),
     "supervisor_agent": (
-        "You are a supervisor agent that coordinates specialist agents.\n"
-        "Route to: rag_agent (document questions), utility_agent (calculations, memory, listing docs), "
-        "parallel_rag (multi-document comparison), or __end__ (simple greetings / direct answers).\n\n"
-        'Respond with JSON: {"reasoning": "...", "next_agent": "...", "direct_answer": "", "rag_sub_tasks": []}\n'
+        "You are the coordinator for the hybrid runtime.\n"
+        "Use spawn_worker, message_worker, list_jobs, and stop_job to coordinate complex work.\n"
+        "Keep worker briefs self-contained, parallelize only truly independent work, collect task outputs, and use verification when the answer is high-stakes or citation-sensitive.\n"
     ),
     "utility_agent": (
         "You are a utility agent that handles calculations, document listing, and persistent memory.\n"
@@ -96,6 +90,27 @@ _DEFAULTS: Dict[str, str] = {
         "You are a helpful assistant. "
         "Answer the user's question directly and concisely. "
         "If you are unsure, say so and suggest what information would help."
+    ),
+    "planner_agent": (
+        "You are the planner for the hybrid runtime.\n\n"
+        "Break the user's request into a compact list of executable tasks.\n"
+        "Each task must include: id, title, executor, mode, depends_on, input, doc_scope, skill_queries.\n"
+        "Executors: rag_worker, utility, data_analyst, general.\n"
+        "The coordinator will execute these tasks as scoped worker jobs and pass the results to a finalizer.\n"
+        "Use mode='parallel' only for independent tasks. Keep the plan bounded.\n"
+    ),
+    "finalizer_agent": (
+        "You are the final response agent.\n"
+        "Combine completed task results into a concise answer.\n"
+        "Preserve citations, gaps, and uncertainties from executor outputs.\n"
+        "Incorporate verification feedback when present.\n"
+        "Do not invent evidence that is not present in task artifacts.\n"
+    ),
+    "verifier_agent": (
+        "You are the verification agent for the hybrid runtime.\n"
+        "Review the proposed final answer against the task execution state.\n"
+        "Return JSON only with keys: status, summary, issues, feedback.\n"
+        "Set status='revise' only when the answer is missing evidence, overstates confidence, or ignores failed tasks.\n"
     ),
     "data_analyst_agent": (
         "You are a data analyst agent. Analyze tabular data (Excel, CSV) using Python pandas.\n\n"
@@ -113,8 +128,11 @@ _DEFAULTS: Dict[str, str] = {
 # Missing sections emit a warning — they never block execution.
 _REQUIRED_SECTIONS: Dict[str, list] = {
     "rag_agent":          ["Operating rules"],
-    "supervisor_agent":   ["next_agent"],
+    "supervisor_agent":   ["spawn_worker", "message_worker", "list_jobs", "stop_job"],
     "general_agent":      ["Operating rules"],
+    "planner_agent":      ["executor"],
+    "finalizer_agent":    ["final"],
+    "verifier_agent":     ["status", "issues", "feedback"],
     "data_analyst_agent": ["Operating Rules"],
 }
 
@@ -172,7 +190,8 @@ class SkillsLoader:
 
         Args:
             agent_key: One of "shared", "general_agent", "rag_agent",
-                "supervisor_agent", "utility_agent", "basic_chat".
+                "supervisor_agent", "utility_agent", "basic_chat",
+                "planner_agent", "finalizer_agent", "verifier_agent", "data_analyst_agent".
             context:   Optional dict of template variables, e.g.
                 ``{"tool_list": "search_document, ...", "tenant_name": "ACME"}``.
         """
@@ -246,6 +265,12 @@ class SkillsLoader:
 
     def _get_path(self, agent_key: str) -> Optional[Path]:
         s = self._settings
+        verifier_path = getattr(s, "verifier_agent_skills_path", None)
+        if not isinstance(verifier_path, Path):
+            verifier_path = None
+        skills_dir = getattr(s, "skills_dir", None)
+        if not isinstance(skills_dir, Path):
+            skills_dir = None
         mapping: Dict[str, Optional[Path]] = {
             "shared":             getattr(s, "shared_skills_path", None),
             "general_agent":      getattr(s, "general_agent_skills_path", None),
@@ -253,7 +278,10 @@ class SkillsLoader:
             "supervisor_agent":   getattr(s, "supervisor_agent_skills_path", None),
             "utility_agent":      getattr(s, "utility_agent_skills_path", None),
             "basic_chat":         getattr(s, "basic_chat_skills_path", None),
+            "planner_agent":      getattr(s, "planner_agent_skills_path", None),
+            "finalizer_agent":    getattr(s, "finalizer_agent_skills_path", None),
             "data_analyst_agent": getattr(s, "data_analyst_skills_path", None),
+            "verifier_agent":     verifier_path or (skills_dir / "verifier_agent.md" if skills_dir is not None else None),
         }
         return mapping.get(agent_key)
 

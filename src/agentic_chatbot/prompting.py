@@ -63,21 +63,6 @@ DEFAULT_RAG_SYNTHESIS_PROMPT = (
 )
 
 
-DEFAULT_PARALLEL_RAG_SYNTHESIS_PROMPT = (
-    "You are merging results from multiple parallel document searches.\n\n"
-    "Below are the individual results from each worker. Each worker searched a different\n"
-    "document or scope. Your job is to:\n\n"
-    "1. Combine the findings into a single coherent answer\n"
-    "2. Preserve ALL citations from every worker (use inline (chunk_id) references)\n"
-    "3. Highlight differences and similarities between documents\n"
-    "4. Note any gaps or asymmetries (one doc has content the other doesn't)\n"
-    "5. Include warnings from any worker\n\n"
-    "{{WORKER_RESULTS}}\n\n"
-    "Produce a clear, structured response that addresses the user's original question.\n"
-    "Use headings or bullet points to organise cross-document comparisons."
-)
-
-
 def _read_text_file(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8").strip()
@@ -130,8 +115,3 @@ def load_grounded_answer_prompt(settings: Settings) -> str:
 def load_rag_synthesis_prompt(settings: Settings) -> str:
     _ensure_local_backend(settings.prompts_backend, "PROMPTS")
     return _load_local_or_default(settings.rag_synthesis_prompt_path, DEFAULT_RAG_SYNTHESIS_PROMPT)
-
-
-def load_parallel_rag_synthesis_prompt(settings: Settings) -> str:
-    _ensure_local_backend(settings.prompts_backend, "PROMPTS")
-    return _load_local_or_default(settings.parallel_rag_synthesis_prompt_path, DEFAULT_PARALLEL_RAG_SYNTHESIS_PROMPT)

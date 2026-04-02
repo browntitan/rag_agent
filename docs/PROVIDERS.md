@@ -1,6 +1,12 @@
 # Providers and Backend Config
 
-## Provider Matrix
+## Provider roles
+
+The runtime currently has three provider roles:
+
+- chat LLM
+- judge LLM
+- embeddings
 
 Supported today:
 
@@ -8,52 +14,41 @@ Supported today:
 - judge LLM: `ollama`, `azure`, or `nvidia`
 - embeddings: `ollama` or `azure`
 
-Azure is the default demo path in `.env.example`.
+Only the providers selected by `LLM_PROVIDER`, `JUDGE_PROVIDER`, and
+`EMBEDDINGS_PROVIDER` are validated.
 
-## Azure OpenAI (Default Demo Path)
+## What each provider role does
 
-```bash
-LLM_PROVIDER=azure
-JUDGE_PROVIDER=azure
-EMBEDDINGS_PROVIDER=azure
+### Chat LLM
 
-AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.us/
-AZURE_OPENAI_API_VERSION=2024-05-01-preview
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
+Used by:
 
-# text-embedding-ada-002 requires 1536-dim vectors
-EMBEDDING_DIM=1536
+- `run_basic_chat()`
+- all `react`-mode runtime agents via `run_general_agent()`:
+  - `general`
+  - `utility`
+  - `data_analyst`
+  - `memory_maintainer`
+- `run_rag_agent()` for the `rag_worker` path and upload-summary kickoff
+- planner worker model calls
+- finalizer worker model calls
+- verifier worker model calls
 
-# HTTP/TLS controls for corporate cert/proxy environments
-HTTP2_ENABLED=true
-SSL_VERIFY=true
-SSL_CERT_FILE=/absolute/path/to/company-ca.pem
+### Judge LLM
 
-# tiktoken controls (used by Azure embeddings token-length checks)
-TIKTOKEN_ENABLED=true
-TIKTOKEN_CACHE_DIR=./data/cache/tiktoken
-```
+Used by:
 
-Notes:
+- LLM-router escalation inside `route_turn()` when deterministic routing confidence is low
+- `run_rag_agent()` grading / grounded-answer support
 
-- Gov endpoints are supported (`https://<resource>.openai.azure.us`).
-- Commercial endpoints are also valid (`https://<resource>.openai.azure.com`).
-- Backward-compatible aliases still load: `AZURE_OPENAI_DEPLOYMENT` and `AZURE_OPENAI_EMBED_DEPLOYMENT`.
-- Main app uses `httpx` client wiring for Azure provider calls.
-- `SSL_CERT_FILE` is propagated to `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` envs for non-httpx paths.
-- If SSL inspection blocks tiktoken downloads, set `TIKTOKEN_ENABLED=false` (or pre-seed `TIKTOKEN_CACHE_DIR`).
+### Embeddings
 
-If `EMBEDDING_DIM` does not match the DB vector column, run:
+Used by:
 
-```bash
-python run.py doctor
-python run.py migrate-embedding-dim --yes
-```
+- KB ingest and retrieval
+- skill-pack indexing and retrieval
 
-## Ollama (Optional)
+## Ollama example
 
 ```bash
 LLM_PROVIDER=ollama
@@ -69,95 +64,51 @@ JUDGE_TEMPERATURE=0.0
 EMBEDDING_DIM=768
 ```
 
-## NVIDIA OpenAI-Compatible Endpoint (Chat/Judge Only)
+## Azure OpenAI example
 
 ```bash
-LLM_PROVIDER=nvidia
-JUDGE_PROVIDER=nvidia
-EMBEDDINGS_PROVIDER=ollama   # or azure
+LLM_PROVIDER=azure
+JUDGE_PROVIDER=azure
+EMBEDDINGS_PROVIDER=azure
 
-NVIDIA_OPENAI_ENDPOINT=https://<your-nvidia-endpoint>/v1
-NVIDIA_API_TOKEN=<bearer-token>
-NVIDIA_CHAT_MODEL=openaigpt-oss-120b
-NVIDIA_JUDGE_MODEL=openaigpt-oss-120b
-NVIDIA_TEMPERATURE=0.0
-
-HTTP2_ENABLED=true
-SSL_VERIFY=false
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.us/
+AZURE_OPENAI_API_VERSION=2024-05-01-preview
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_JUDGE_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-ada-002
+EMBEDDING_DIM=1536
 ```
 
-Notes:
+## Mixed-provider setups
 
-- Authentication is sent as `Authorization: Bearer <token>`.
-- `NVIDIA_API_TOKEN` is preferred; legacy `Token` env var is also accepted.
-- Endpoint is normalized to include `/v1` if omitted.
-- Embeddings remain `ollama|azure` in v1. `EMBEDDINGS_PROVIDER=nvidia` is intentionally rejected by config validation.
-
-## GGUF with Ollama
-
-### Manual (recommended)
-
-1. Put your `.gguf` file and `Modelfile` under `./data/ollama/gguf`.
-2. Create a model in the running Ollama container:
+Mixed setups are allowed. Example:
 
 ```bash
-docker compose --profile ollama up -d ollama
-docker compose exec ollama ollama create my-gguf-model -f /gguf/Modelfile
+LLM_PROVIDER=azure
+JUDGE_PROVIDER=azure
+EMBEDDINGS_PROVIDER=ollama
 ```
 
-3. Point app settings to the created model:
+## Operational checks
+
+Useful commands:
 
 ```bash
-OLLAMA_CHAT_MODEL=my-gguf-model
-OLLAMA_JUDGE_MODEL=my-gguf-model
+python run.py doctor
+python run.py migrate
+python run.py index-skills
+python run.py sync-kb
 ```
 
-### Auto-import (explicit opt-in)
+## Related runtime settings
 
-```bash
-OLLAMA_GGUF_AUTO_IMPORT=true
-OLLAMA_GGUF_MODEL_NAME=my-gguf-model
-OLLAMA_GGUF_MODELFILE=/gguf/Modelfile
-```
+The provider layer now feeds the live next runtime directly. Important nearby settings are:
 
-Run importer only when needed:
+- `LLM_ROUTER_ENABLED`
+- `LLM_ROUTER_CONFIDENCE_THRESHOLD`
+- `ENABLE_COORDINATOR_MODE`
+- `RUNTIME_EVENTS_ENABLED`
 
-```bash
-docker compose --profile ollama --profile ollama-import up ollama-gguf-importer
-```
-
-This importer is not part of default compose startup and does not run on image build.
-
-## Storage / Backend Switches
-
-```bash
-DATABASE_BACKEND=postgres
-VECTOR_STORE_BACKEND=pgvector
-OBJECT_STORE_BACKEND=local
-SKILLS_BACKEND=local
-PROMPTS_BACKEND=local
-```
-
-Current implementation supports `postgres` + `pgvector` + local file-backed skills/prompts/ingestion.
-
-`OBJECT_STORE_BACKEND=s3|azure_blob` and remote skills/prompts backends are scaffolded in config but not implemented yet.
-
-## Path-Based Prompt / Skills Config
-
-```bash
-SKILLS_DIR=./data/skills
-PROMPTS_DIR=./data/prompts
-
-SHARED_SKILLS_PATH=./data/skills/skills.md
-GENERAL_AGENT_SKILLS_PATH=./data/skills/general_agent.md
-RAG_AGENT_SKILLS_PATH=./data/skills/rag_agent.md
-SUPERVISOR_AGENT_SKILLS_PATH=./data/skills/supervisor_agent.md
-UTILITY_AGENT_SKILLS_PATH=./data/skills/utility_agent.md
-BASIC_CHAT_SKILLS_PATH=./data/skills/basic_chat.md
-
-JUDGE_GRADING_PROMPT_PATH=./data/prompts/judge_grading.txt
-JUDGE_REWRITE_PROMPT_PATH=./data/prompts/judge_rewrite.txt
-GROUNDED_ANSWER_PROMPT_PATH=./data/prompts/grounded_answer.txt
-RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/rag_synthesis.txt
-PARALLEL_RAG_SYNTHESIS_PROMPT_PATH=./data/prompts/parallel_rag_synthesis.txt
-```
+Those settings do not change provider construction, but they do affect how the runtime uses
+the configured models.

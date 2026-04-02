@@ -23,8 +23,12 @@ def get_langchain_callbacks(
     """
 
     metadata = metadata or {}
+    public_key = getattr(settings, "langfuse_public_key", None)
+    secret_key = getattr(settings, "langfuse_secret_key", None)
+    host = getattr(settings, "langfuse_host", None)
+    debug = bool(getattr(settings, "langfuse_debug", False))
 
-    if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+    if not (public_key and secret_key):
         return []
 
     try:
@@ -40,10 +44,10 @@ def get_langchain_callbacks(
         if "secret_key" in params:
             return [
                 CallbackHandler(
-                    public_key=settings.langfuse_public_key,
-                    secret_key=settings.langfuse_secret_key,
-                    host=settings.langfuse_host,
-                    debug=settings.langfuse_debug,
+                    public_key=public_key,
+                    secret_key=secret_key,
+                    host=host,
+                    debug=debug,
                     session_id=session_id,
                     trace_name=trace_name,
                     metadata=metadata,
@@ -51,28 +55,28 @@ def get_langchain_callbacks(
             ]
 
         # Newer SDKs (v3+) read auth/host from env and expose a slimmer API.
-        if settings.langfuse_host:
-            os.environ["LANGFUSE_HOST"] = settings.langfuse_host
-        os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key or ""
-        os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key or ""
+        if host:
+            os.environ["LANGFUSE_HOST"] = host
+        os.environ["LANGFUSE_PUBLIC_KEY"] = public_key or ""
+        os.environ["LANGFUSE_SECRET_KEY"] = secret_key or ""
         try:
             # v3 callback handlers resolve clients from the global client registry.
             # Explicitly initialize the client so callbacks can attach and emit traces.
             from langfuse import Langfuse
 
             Langfuse(
-                public_key=settings.langfuse_public_key,
-                secret_key=settings.langfuse_secret_key,
-                host=settings.langfuse_host,
-                debug=settings.langfuse_debug,
+                public_key=public_key,
+                secret_key=secret_key,
+                host=host,
+                debug=debug,
             )
         except Exception:
             pass
 
         try:
-            handler = CallbackHandler(public_key=settings.langfuse_public_key, update_trace=True)
+            handler = CallbackHandler(public_key=public_key, update_trace=True)
         except TypeError:
-            handler = CallbackHandler(public_key=settings.langfuse_public_key)
+            handler = CallbackHandler(public_key=public_key)
 
         return [handler]
     except Exception:

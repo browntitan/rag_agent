@@ -44,8 +44,8 @@ def make_data_analyst_tools(
 
     Args:
         stores:   KnowledgeStores providing access to doc_store and chunk_store.
-        session:  A ChatSession or SessionProxy with a ``scratchpad`` dict and
-                  an optional ``workspace`` (SessionWorkspace) for persistent storage.
+        session:  A session-like object with ``scratchpad`` and optional
+                  ``workspace`` access for persistent storage.
         settings: Application settings (sandbox config, etc.).
 
     Returns:
@@ -469,7 +469,7 @@ def make_data_analyst_tools(
     skills_search = None
     try:
         from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool  # noqa: PLC0415
-        skills_search = make_skills_search_tool(settings)
+        skills_search = make_skills_search_tool(settings, stores=stores, session=session)
     except Exception as e:
         logger.warning("Could not build search_skills tool: %s", e)
 

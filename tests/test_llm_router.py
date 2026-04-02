@@ -33,10 +33,10 @@ class TestRouterDecisionBackwardsCompat:
             route="AGENT",
             confidence=0.9,
             reasons=["tool_intent"],
-            suggested_agent="rag_agent",
+            suggested_agent="coordinator",
             router_method="llm",
         )
-        assert d.suggested_agent == "rag_agent"
+        assert d.suggested_agent == "coordinator"
         assert d.router_method == "llm"
 
 
@@ -70,7 +70,7 @@ class TestHybridRouterFastPaths:
         )
         assert decision.route == "AGENT"
         assert decision.router_method == "deterministic"
-        assert decision.suggested_agent == "rag_agent"
+        assert decision.suggested_agent == ""
         judge.invoke.assert_not_called()
 
     def test_high_confidence_deterministic_skips_llm(self):
@@ -86,6 +86,15 @@ class TestHybridRouterFastPaths:
         assert decision.route == "BASIC"
         assert decision.router_method == "deterministic"
         judge.with_structured_output.assert_not_called()
+
+    def test_deterministic_router_suggests_coordinator_for_complex_compare_request(self):
+        decision = route_message(
+            'Compare "MSA v1" and "MSA v2" and synthesize the differences.',
+            has_attachments=False,
+        )
+
+        assert decision.route == "AGENT"
+        assert decision.suggested_agent == "coordinator"
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +123,7 @@ class TestHybridRouterLLMEscalation:
         'calculate something' matches only _TOOL_VERBS → 1 reason → confidence 0.75.
         With threshold 0.76, the deterministic result falls below it, so LLM is consulted.
         """
-        judge = self._make_judge_with_structured_output("AGENT", 0.9, "rag_agent")
+        judge = self._make_judge_with_structured_output("AGENT", 0.9, "coordinator")
 
         decision = route_message_hybrid(
             "calculate something",
@@ -124,7 +133,7 @@ class TestHybridRouterLLMEscalation:
         )
         assert decision.route == "AGENT"
         assert decision.router_method == "llm"
-        assert decision.suggested_agent == "rag_agent"
+        assert decision.suggested_agent == "coordinator"
 
     def test_llm_output_route_overrides_deterministic(self):
         """If LLM says BASIC when deterministic would say AGENT, LLM wins."""
@@ -171,11 +180,11 @@ class TestHybridRouterLLMEscalation:
 
 class TestParseResponseText:
     def test_parse_valid_json(self):
-        text = '{"route": "AGENT", "confidence": 0.92, "reasoning": "doc query", "suggested_agent": "rag_agent"}'
+        text = '{"route": "AGENT", "confidence": 0.92, "reasoning": "doc query", "suggested_agent": "coordinator"}'
         out = _parse_llm_response_text(text)
         assert out.route == "AGENT"
         assert out.confidence == 0.92
-        assert out.suggested_agent == "rag_agent"
+        assert out.suggested_agent == "coordinator"
 
     def test_parse_missing_route_uses_keyword_fallback(self):
         out = _parse_llm_response_text("This is a document retrieval request")

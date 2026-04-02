@@ -9,7 +9,7 @@ class RouterDecision:
     route: str  # "BASIC" | "AGENT"
     confidence: float
     reasons: list[str]
-    suggested_agent: str = ""          # "" | "rag_agent" | "utility_agent" | "parallel_rag" | "data_analyst"
+    suggested_agent: str = ""          # "" | "coordinator" | "data_analyst"
     router_method: str = "deterministic"  # "deterministic" | "llm" | "llm_fallback"
 
 
@@ -18,7 +18,7 @@ _TOOL_VERBS = re.compile(
     r"use\s+tool|call\s+tool|tool\s+call|run\s+tool|execute|calculate|compute|" +
     r"look\s+up|search|find|retrieve|query|open\s+file|summarize\s+this|" +
     r"upload|attached|attachment|document|pdf|spreadsheet|" +
-    r"compare\s+and\s+recommend|step\s+by\s+step|first\s+do\s+.*\s+then\s+" +
+    r"compare|comparison|diff|difference|compare\s+and\s+recommend|step\s+by\s+step|first\s+do\s+.*\s+then\s+" +
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -37,6 +37,15 @@ _CITATION_HINTS = re.compile(r"\b(cite|citations|sources|evidence|grounded|accor
 
 _HIGH_STAKES_HINTS = re.compile(
     r"\b(medical|diagnosis|legal|contract|financial|tax|security\s+incident|compliance)\b",
+    re.IGNORECASE,
+)
+
+_COORDINATOR_HINTS = re.compile(
+    r"\b("
+    r"compare|comparison|difference|differences|across\s+documents|multi-step|step\s+by\s+step|"
+    r"first\s+do\s+.*\s+then\s+|research|investigate|long[-\s]?running|background|parallel|"
+    r"plan|orchestrate|coordinate|verify|synthesize"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -64,7 +73,8 @@ def route_message(
         return RouterDecision(route="AGENT", confidence=1.0, reasons=["explicit_force_agent"])
 
     if has_attachments:
-        return RouterDecision(route="AGENT", confidence=1.0, reasons=["attachments_present"])
+        suggested = "coordinator" if _COORDINATOR_HINTS.search(user_text) else ""
+        return RouterDecision(route="AGENT", confidence=1.0, reasons=["attachments_present"], suggested_agent=suggested)
 
     if _TOOL_VERBS.search(user_text):
         reasons.append("tool_or_multistep_intent")
@@ -85,6 +95,8 @@ def route_message(
             suggested_agent="data_analyst",
         )
 
+    suggested_agent = "coordinator" if _COORDINATOR_HINTS.search(user_text) else ""
+
     # Heuristic complexity: long messages tend to benefit from the agent.
     if len(user_text.strip()) > 600:
         reasons.append("long_input")
@@ -92,6 +104,6 @@ def route_message(
     if reasons:
         # Not all reasons are equal; attachments would have returned above.
         confidence = 0.75 if len(reasons) == 1 else 0.9
-        return RouterDecision(route="AGENT", confidence=confidence, reasons=reasons)
+        return RouterDecision(route="AGENT", confidence=confidence, reasons=reasons, suggested_agent=suggested_agent)
 
     return RouterDecision(route="BASIC", confidence=0.85, reasons=["general_knowledge_or_small_talk"])

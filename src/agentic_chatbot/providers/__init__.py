@@ -1,4 +1,4 @@
-from agentic_chatbot.providers.llm_factory import ProviderBundle, build_providers
+from agentic_chatbot.providers.llm_factory import ProviderBundle, build_embeddings, build_providers
 from agentic_chatbot.providers.dependency_checks import (
     DependencyIssue,
     ProviderConfigIssue,
@@ -14,6 +14,7 @@ from agentic_chatbot.providers.dependency_checks import (
 
 __all__ = [
     "ProviderBundle",
+    "build_embeddings",
     "build_providers",
     "DependencyIssue",
     "ProviderConfigIssue",

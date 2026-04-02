@@ -8,6 +8,7 @@ from agentic_chatbot.config import Settings
 from agentic_chatbot.db.chunk_store import ChunkStore
 from agentic_chatbot.db.document_store import DocumentStore
 from agentic_chatbot.db.memory_store import MemoryStore
+from agentic_chatbot.db.skill_store import SkillStore
 
 
 def _sha1(text: str) -> str:
@@ -26,6 +27,7 @@ class KnowledgeStores:
     chunk_store: ChunkStore
     doc_store: DocumentStore
     memory_store: MemoryStore
+    skill_store: SkillStore
 
 
 def load_stores(settings: Settings, embeddings: object) -> KnowledgeStores:
@@ -56,4 +58,5 @@ def load_stores(settings: Settings, embeddings: object) -> KnowledgeStores:
         chunk_store=ChunkStore(embed_fn=embed_fn, embedding_dim=settings.embedding_dim),
         doc_store=DocumentStore(),
         memory_store=MemoryStore(),
+        skill_store=SkillStore(embed_fn=embed_fn, embedding_dim=settings.embedding_dim),
     )

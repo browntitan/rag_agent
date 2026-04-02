@@ -1,174 +1,164 @@
 # Tools and Tool Calling
 
-This codebase uses LangChain tools with LangGraph ReAct agents.
+The live runtime now uses tool calling through `src/agentic_chatbot_next`, not through
+the legacy `src/agentic_chatbot/runtime` package.
 
-- `utility_agent` (in the multi-agent graph) uses utility tools.
-- `data_analyst` (in the multi-agent graph) uses data analyst tools.
-- `run_rag_agent()` uses 11 RAG specialist tools.
-- Legacy fallback `GeneralAgent` uses utility tools + `rag_agent_tool`.
+## Runtime tool model
 
----
+The primary runtime abstraction is `ToolDefinition` plus a bound `ToolContext` in
+`src/agentic_chatbot_next/tools/`.
 
-## Tool design principles
+Each tool definition carries:
 
-### 1. Narrow tools
+- `name`
+- `group`
+- `builder`
+- `description`
+- `args_schema`
+- `read_only`
+- `destructive`
+- `background_safe`
+- `concurrency_key`
+- `requires_workspace`
+- `serializer`
+- `metadata`
 
-A tool should do one thing well.
+The registry binds those definitions to the current session/job context and produces
+LangChain-compatible tools for agent execution.
 
-Good:
+## Top-level runtime tool groups
 
-- `calculator(expression)` — safe math eval only
-- `extract_clauses(doc_id, clause_numbers)` — exact clause retrieval
-- `rag_agent_tool(query, ...)` — delegates document intelligence to `run_rag_agent`
+### Utility cluster
 
-Avoid:
+Exposed through next-runtime tool definitions such as:
 
-- `do_everything(args: dict)`
+- `calculator`
+- `list_indexed_docs`
+- `memory_save`
+- `memory_load`
+- `memory_list`
+- `search_skills`
 
-### 2. Strong descriptions
+In the live runtime these memory tools are file-backed under `data/memory/...`, with
+`index.json` as the authoritative store and derived `MEMORY.md` / `topics/*.md` files
+for human inspection.
 
-Tool docstrings are part of the model-facing contract:
+### General cluster
 
-- when to use the tool
-- argument expectations
-- return shape
+- `rag_agent_tool`
 
-### 3. Simple schemas
+This is how the default `general` agent reaches grounded document reasoning without
+receiving the entire internal RAG specialist tool surface directly.
 
-For broad model compatibility (especially local models):
+### Data-analyst cluster
 
-- prefer primitive args (`str`, `int`, `float`, `bool`)
-- keep nested JSON payloads simple
-
-### 4. Stable outputs
-
-Tools should return predictable shapes where possible.
-
----
-
-## ReAct loop pattern
-
-Both `general_agent.py` and `rag/agent.py` use `langgraph.prebuilt.create_react_agent`.
-
-```python
-from langgraph.prebuilt import create_react_agent
-
-graph = create_react_agent(llm, tools=tools)
-result = graph.invoke(
-    {"messages": msgs},
-    config={"recursion_limit": budget},
-)
-```
-
-Budget formulas in code:
-
-```python
-# GeneralAgent
-recursion_limit = (max(MAX_AGENT_STEPS, MAX_TOOL_CALLS) + 1) * 2 + 1
-
-# RAGAgent
-recursion_limit = (MAX_RAG_AGENT_STEPS + MAX_TOOL_CALLS + 1) * 2 + 1
-
-# DataAnalystAgent
-recursion_limit = (DATA_ANALYST_MAX_STEPS + MAX_TOOL_CALLS + 1) * 2 + 1
-```
-
----
-
-## Tools in this repo
-
-### Utility tools (calculator + docs + memory)
-
-Used by:
-
-- `utility_agent` in the supervisor graph
-- fallback `GeneralAgent`
-
-Tools:
-
-- `calculator` (`tools/calculator.py`)
-- `list_indexed_docs` (`tools/list_docs.py`)
-- `memory_save`, `memory_load`, `memory_list` (`tools/memory_tools.py`)
-
-### GeneralAgent fallback-only tool
-
-- `rag_agent_tool` (`tools/rag_agent_tool.py`)
-
-This tool wraps `run_rag_agent()` and returns the same contract dict as direct/graph RAG calls.
-
-### RAG specialist tools (11)
-
-Built by `make_all_rag_tools(stores, session)` in `tools/rag_tools.py`:
-
-- `resolve_document`
-- `search_document`
-- `search_all_documents`
-- `extract_clauses`
-- `list_document_structure`
-- `extract_requirements`
-- `compare_clauses`
-- `diff_documents`
+- `load_dataset`
+- `inspect_columns`
+- `execute_code`
 - `scratchpad_write`
 - `scratchpad_read`
 - `scratchpad_list`
+- `workspace_write`
+- `workspace_read`
+- `workspace_list`
 
-### Data analyst tools (7)
+### Orchestration cluster
 
-Built by `make_data_analyst_tools(stores, session, *, settings)` in `tools/data_analyst_tools.py`. Used exclusively by the `data_analyst` agent node.
+- `spawn_worker`
+- `message_worker`
+- `list_jobs`
+- `stop_job`
 
-| Tool | Args | Purpose |
-|---|---|---|
-| `load_dataset` | `doc_id` | Resolve doc → read file → return schema, shape, head (5 rows), dtypes. Stores host path in scratchpad. **Always call first.** |
-| `inspect_columns` | `doc_id`, `columns` | Per-column stats. Numeric: mean/std/min/max/percentiles. String: unique count, top-5 value frequencies. |
-| `execute_code` | `code`, `doc_ids` | Run Python in Docker sandbox. Files mounted at `/workspace/`. pandas/openpyxl/xlrd pre-installed. Returns stdout, stderr, success, execution_time. |
-| `calculator` | `expression` | Reused from utility tools. Quick arithmetic without spinning up a container. |
-| `scratchpad_write` | `key`, `value` | Save intermediate observation or plan for later reference. |
-| `scratchpad_read` | `key` | Retrieve a saved scratchpad value. |
-| `scratchpad_list` | _(none)_ | List all scratchpad keys in the current session. |
+These are only exposed to agents that allow worker orchestration.
 
-**Mandatory workflow:** Load → Inspect → Plan → Execute → Verify → Reflect. The `data_analyst_agent.md` skill file enforces this order.
+## Tool surfaces by runtime agent
 
-**Docker sandbox properties:**
-- Fresh container per `execute_code` call, auto-removed after use
-- Network disabled (`network_disabled=True`)
-- Memory limited (default `512m`, configurable via `SANDBOX_MEMORY_LIMIT`)
-- Timeout: default 60 s, configurable via `SANDBOX_TIMEOUT_SECONDS`
-- stdout/stderr each truncated to 50 KB (`truncated=True` flag when cut)
+### `general`
 
----
+- utility tools
+- `rag_agent_tool`
+- orchestration tools
 
-## Key return-shape notes
+`general` may delegate to `coordinator` or `memory_maintainer` because those worker roles
+are explicitly allowed in the live registry.
 
-- `list_document_structure(doc_id)` returns either:
-  - `{"doc_id": "...", "outline": [...]}`
-  - or a message payload with empty outline when no structure exists.
-- `compare_clauses(...)` returns `doc_1_clauses`, `doc_2_clauses`, `missing_in_1`, `missing_in_2`, `shared`.
-- `diff_documents(...)` returns `shared`, `only_in_doc_1`, `only_in_doc_2`, plus both outlines.
-- `rag_agent_tool(...)` returns a Python dict contract (may be serialized in tool traces).
+### `coordinator`
 
----
+- orchestration tools only
 
-## Tool budgeting and termination
+`coordinator` is not a normal ReAct worker. Its runtime mode is `coordinator`, and the
+kernel handles planning, task batching, finalization, and optional verification around it.
 
-| Parameter | Env Var | Default | Controls |
-|---|---|---|---|
-| `max_steps` | `MAX_AGENT_STEPS` | 10 | max LLM calls in `GeneralAgent` fallback path |
-| `max_tool_calls` | `MAX_TOOL_CALLS` | 12 | max tool invocations in General/RAG loops |
-| `max_rag_agent_steps` | `MAX_RAG_AGENT_STEPS` | 8 | max LLM turns in RAG ReAct loop |
-| `data_analyst_max_steps` | `DATA_ANALYST_MAX_STEPS` | 10 | max LLM turns in data analyst ReAct loop |
+### `utility`
 
-When recursion budget is hit, code catches the stop condition and returns a graceful partial response.
+- calculator
+- document listing
+- memory tools
+- skill search
 
----
+### `data_analyst`
 
-## Non-tool-calling fallback behavior
+- dataset inspection
+- Docker execution
+- scratchpad tools
+- workspace tools
+- skill search
 
-If `bind_tools(...)` fails:
+### `verifier`
 
-- `GeneralAgent`: JSON plan-execute fallback (`_run_plan_execute_fallback`)
-- `RAGAgent`: retrieval + grading + grounded answer fallback (no ReAct tool loop)
+- `rag_agent_tool`
+- `list_indexed_docs`
+- `search_skills`
 
-Files:
+`verifier` also has its own runtime mode (`verifier`) rather than sharing the generic
+`react` path.
 
-- `src/agentic_chatbot/agents/general_agent.py`
-- `src/agentic_chatbot/rag/agent.py`
+### `rag_worker`
+
+No top-level tool exposure. It delegates to the next-runtime RAG contract flow, which uses
+the internal specialist retrieval/synthesis layer.
+
+## Internal RAG specialist tools
+
+Inside the RAG engine, the tool layer includes operations such as:
+
+- document resolution
+- search across docs or collections
+- clause and requirement extraction
+- document diff / comparison
+- chunk window fetches
+- collection listing
+- scratchpad helpers
+- optional skill lookup helpers
+
+These tools matter for RAG behavior, but they are not identical to the top-level tool pool
+seen by the `general` runtime agent.
+
+## Fallback behavior
+
+If a model wrapper does not support tool calling:
+
+- `run_general_agent()` falls back to a plan-execute loop
+- the tool interfaces remain the same from the runtime perspective
+
+This keeps agent behavior functional even when native tool binding is unavailable.
+
+## Safety and metadata
+
+The runtime uses tool-definition metadata primarily for:
+The runtime uses tool metadata primarily for:
+
+- shaping the visible tool surface
+- distinguishing read-only vs world-changing operations
+- grouping tools by capability
+- documenting orchestration permissions through agent config
+
+The repo does not yet implement a full human approval layer, but the tool metadata now
+exists in one place instead of being scattered across agent code.
+
+## Observability tie-in
+
+Tool execution is now observable through both:
+
+- LangChain callbacks when external tracing is configured
+- local `tool_start`, `tool_end`, and `tool_error` events in `data/runtime/*`

@@ -1,218 +1,156 @@
 # Architecture
 
-For C4-style context/container/component views, see `docs/C4_ARCHITECTURE.md`.
+This repository now runs through `src/agentic_chatbot_next/`.
 
-This system is built around separation of concerns:
+## Live runtime stance
 
-1. A deterministic router keeps simple turns cheap (`BASIC`).
-2. A multi-agent supervisor graph handles complex turns (`AGENT`).
-3. Specialist agents isolate responsibilities (RAG, utility, parallel RAG workers).
-4. PostgreSQL (with `pgvector` + `pg_trgm`) is the single backend.
-5. A FastAPI OpenAI-compatible gateway (`/v1`) can expose the runtime to external chat UIs.
-6. A legacy single-agent fallback is preserved for compatibility.
+The live system is a session-oriented runtime with two top-level routes:
 
----
+- `BASIC`: direct chat with no tools
+- `AGENT`: late-bound agent execution with tools, worker jobs, notifications, and persistence
 
-## High-level request flow
+It is not a monolithic graph runtime. LangGraph is used tactically inside the `react`
+executor, while the top-level orchestration is plain Python code in the next runtime.
 
-```text
-User input
-  -> Orchestrator (ChatbotApp.process_turn)
-  -> Router (BASIC or AGENT)
+## Main components
 
-BASIC route
-  -> run_basic_chat (LLM only, no tools)
+### Entrypoints
 
-AGENT route (primary)
-  -> build_multi_agent_graph(...)
-  -> supervisor (dynamic discovery via AgentRegistry)
-     -> rag_agent
-     -> utility_agent
-     -> data_analyst         <- NEW: pandas/Excel/CSV analysis in Docker sandbox
-     -> parallel_planner -> rag_worker x N -> rag_synthesizer
-     -> __end__
+- CLI: `src/agentic_chatbot/cli.py`
+- FastAPI gateway: `src/agentic_chatbot/api/main.py`
 
-AGENT fallback (capability/config issue only)
-  -> GeneralAgent (create_react_agent)
-  -> tools: calculator, list_indexed_docs, memory_*, rag_agent_tool
+Both entrypoints build `RuntimeService` from `src/agentic_chatbot_next/app/service.py`.
 
-Uploads
-  -> ingest_paths(...)
-  -> direct run_rag_agent(...) summary kickoff
+### Runtime service
 
-OpenAI-compatible HTTP gateway (optional)
-  -> FastAPI /v1/chat/completions
-  -> maps OpenAI messages to ChatSession history + user turn
-  -> process_turn(...)
+`RuntimeService` owns:
 
-Gateway auth mode:
-  -> no in-app auth in simplified mode
-  -> secure via network/proxy layer when needed
+- workspace setup
+- upload ingest kickoff
+- route selection
+- choosing the initial agent
+- handoff into the session kernel
+
+### Router
+
+`src/agentic_chatbot_next/router/` decides `BASIC` vs `AGENT`.
+
+- deterministic rules live in `router.py`
+- the hybrid judge-model path lives in `llm_router.py`
+- `policy.py` turns `suggested_agent` hints into the initial live agent selection
+
+### Session kernel
+
+`RuntimeKernel` in `src/agentic_chatbot_next/runtime/kernel.py` owns:
+
+- session-state hydration
+- early transcript persistence
+- event emission
+- notification drain
+- tool-context creation
+- worker jobs and mailbox continuation
+- coordinator planning and worker batching
+
+### Query loop
+
+`QueryLoop` in `src/agentic_chatbot_next/runtime/query_loop.py` owns per-agent execution.
+
+It handles:
+
+- prompt assembly
+- skill-context injection
+- memory-context injection
+- basic execution
+- react execution
+- RAG worker execution
+- planner / finalizer / verifier execution
+- dedicated memory-maintainer execution
+
+### Agent registry
+
+`AgentRegistry` loads agent definitions from `data/agents/*.md`.
+
+Markdown frontmatter is now the live source of truth for:
+
+- agent mode
+- prompt file
+- allowed tools
+- allowed worker agents
+- memory scopes
+- max steps and tool-call limits
+- role metadata
+
+### Tools and skills
+
+- tools live under `src/agentic_chatbot_next/tools/`
+- skill loading and indexing live under `src/agentic_chatbot_next/skills/`
+
+The current split is:
+
+- tools change or inspect the outside world
+- skills inject bounded operating guidance into prompts
+
+### RAG
+
+The live RAG flow lives under `src/agentic_chatbot_next/rag/`.
+
+The stable contract is unchanged:
+
+- `answer`
+- `citations`
+- `used_citation_ids`
+- `confidence`
+- `retrieval_summary`
+- `followups`
+- `warnings`
+
+### Memory
+
+The live runtime uses file-backed memory under `data/memory/...`.
+
+Authoritative state is written to `index.json`. Human-readable `MEMORY.md` and
+`topics/*.md` are derived outputs.
+
+### Persistence
+
+The next runtime persists:
+
+- session state
+- transcripts
+- events
+- notifications
+- jobs
+- mailbox messages
+- worker artifacts
+
+under `data/runtime/...`, keyed through `filesystem_key(...)`.
+
+## High-level flow
+
+```mermaid
+flowchart TD
+    user["User / API client / CLI"]
+    service["RuntimeService"]
+    router["route_turn()"]
+    basic["RuntimeKernel.process_basic_turn()"]
+    agent["RuntimeKernel.process_agent_turn()"]
+    loop["QueryLoop"]
+    tools["Tools / Skills / Memory / RAG"]
+    jobs["RuntimeJobManager"]
+    runtime["data/runtime"]
+
+    user --> service --> router
+    router -->|"BASIC"| basic
+    router -->|"AGENT"| agent
+    agent --> loop
+    loop --> tools
+    agent --> jobs
+    basic --> runtime
+    agent --> runtime
+    jobs --> runtime
 ```
 
----
+## Legacy status
 
-## Key design choices
-
-### 1. Deterministic routing before LLM-heavy orchestration
-
-`router/router.py` uses regex heuristics and returns `BASIC`/`AGENT` with confidence + reasons.
-
-Escalation triggers include:
-
-- attachments
-- tool/multi-step intent
-- citation/grounding language
-- high-stakes hints
-- long input (`>600` chars)
-
-### 2. Supervisor-driven multi-agent orchestration
-
-The AGENT path uses a LangGraph `StateGraph` (`graph/builder.py`) with seven nodes:
-
-- `supervisor`
-- `rag_agent`
-- `utility_agent`
-- `data_analyst`
-- `parallel_planner`
-- `rag_worker`
-- `rag_synthesizer`
-
-The supervisor loops until it chooses `__end__` or loop safety triggers `SUPERVISOR_MAX_LOOPS`.
-
-Agent routing decisions are driven by `AgentRegistry` — the supervisor's awareness of available agents is rendered dynamically from the registry into the `{{available_agents}}` template variable in `supervisor_agent.md`.
-
-### 3. RAG invocation modes
-
-RAG runs through the same core function (`run_rag_agent`) in different invocation modes:
-
-- primary: supervisor handoff to `rag_agent` node (`graph/nodes/rag_node.py`)
-- parallel: `rag_worker` nodes run independent scoped RAG calls
-- upload kickoff: orchestrator direct call after ingestion
-- fallback: `rag_agent_tool` called by legacy `GeneralAgent`
-
-### 4. LangGraph ReAct loops (where applicable)
-
-Both `general_agent.py` and `rag/agent.py` use `create_react_agent` when tool-calling is supported.
-
-Benefits:
-
-- graph-managed state
-- recursion-budget control
-- graceful stop handling
-- easier streaming/checkpoint extension path
-
-### 5. PostgreSQL as the single persistence layer
-
-All core data is in PostgreSQL:
-
-- `documents` table for metadata
-- `chunks` table for chunk text + embeddings + FTS vector + structure metadata
-- `memory` table for session key-value memory
-
-Relevant extensions/indexes:
-
-- `pgvector` (HNSW vector index)
-- `pg_trgm` (fuzzy title matching)
-- GIN index on generated `tsvector`
-
-### 6. Structure-aware ingestion
-
-`rag/ingest.py` classifies and splits docs using:
-
-- `rag/structure_detector.py`
-- `rag/clause_splitter.py`
-
-Document structure types:
-
-- `general`
-- `structured_clauses`
-- `requirements_doc`
-- `policy_doc`
-- `contract`
-
-### 7. Skills-driven prompts
-
-Prompt behavior is loaded from `data/skills/*.md` through `rag/skills.py`.
-
-Hot-reload behavior:
-
-- RAG/supervisor/utility/data_analyst prompts are loaded when those nodes are built
-- general agent and basic-chat prompts are loaded once in orchestrator init
-
-### 8. Dynamic agent registry
-
-`agents/agent_registry.py` provides `AgentRegistry` — a central catalog of `AgentSpec` objects.
-
-Benefits over hardcoding:
-- Adding a new agent only requires registering it in the registry + wiring graph edges. The supervisor prompt stays in sync automatically.
-- Agents can be conditionally enabled at runtime (e.g., `data_analyst` requires Docker).
-- `valid_agent_names()` drives supervisor response validation — unknown agents are rejected.
-
-When Docker is unavailable, `data_analyst` is `enabled=False` and disappears from the supervisor prompt. The system degrades cleanly with no code changes.
-
----
-
-## Memory model
-
-### Scratchpad (within-turn)
-
-- `session.scratchpad` (dict)
-- used by RAG scratchpad tools for intermediate findings
-- optionally cleared each turn (`CLEAR_SCRATCHPAD_PER_TURN`)
-
-### Persistent memory (cross-turn)
-
-- PostgreSQL `memory` table keyed by `(session_id, key)`
-- accessed via `memory_save`, `memory_load`, `memory_list`
-- primarily used by `utility_agent` (and fallback `GeneralAgent`)
-
----
-
-## Fallback behavior
-
-### Multi-agent graph fallback
-
-If graph execution fails due capability/config incompatibility (for example tool-calling support), orchestrator logs warning and runs legacy `GeneralAgent`.
-Unexpected graph runtime errors are surfaced explicitly instead of silently masking defects.
-
-### Tool-calling fallback inside agents
-
-If a model cannot `bind_tools`:
-
-- `GeneralAgent`: plan-execute fallback
-- `RAGAgent`: retrieval + grading + grounded-answer fallback
-
-Note: `rag/rewrite.py` is present as a helper module but not currently wired into active `run_rag_agent()` flow.
-
----
-
-## Observability
-
-Langfuse callbacks (when configured) capture:
-
-- turn traces (`chat_turn`, `upload_ingest`)
-- router metadata (route/confidence/reasons)
-- graph node activity and fallback runs
-
-Callback setup: `src/agentic_chatbot/observability/callbacks.py`
-
----
-
-## Where patterns appear
-
-| Pattern | Files |
-|---|---|
-| Router | `router/router.py` |
-| Supervisor graph | `graph/builder.py`, `graph/supervisor.py` |
-| Dynamic agent registry | `agents/agent_registry.py`, `data/skills/supervisor_agent.md` |
-| Data analyst agent | `graph/nodes/data_analyst_node.py`, `tools/data_analyst_tools.py`, `sandbox/docker_executor.py` |
-| Parallel RAG | `graph/nodes/parallel_planner_node.py`, `graph/nodes/rag_worker_node.py`, `graph/nodes/rag_synthesizer_node.py` |
-| ReAct loops | `agents/general_agent.py`, `rag/agent.py` |
-| RAG tool wrapper (fallback path) | `tools/rag_agent_tool.py` |
-| Hybrid retrieval | `tools/rag_tools.py`, `rag/retrieval.py` |
-| Relevance grading | `rag/grading.py` |
-| Grounded synthesis | `rag/answer.py`, `rag/agent.py` |
-| Ingestion and structure detection | `rag/ingest.py`, `rag/structure_detector.py`, `rag/clause_splitter.py` |
-| OCR ingestion | `rag/ocr.py` |
-| Persistent memory | `db/memory_store.py` |
+`src/agentic_chatbot/runtime/*` is no longer the live execution path. It remains in the
+repository as migration/reference code only.

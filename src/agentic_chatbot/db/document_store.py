@@ -16,6 +16,7 @@ class DocumentRecord:
     source_type: str                    # 'kb' | 'upload'
     content_hash: str
     tenant_id: str = "local-dev"
+    collection_id: str = "default"
     source_path: str = ""
     num_chunks: int = 0
     ingested_at: str = ""
@@ -34,11 +35,12 @@ class DocumentStore:
                 cur.execute(
                     """
                     INSERT INTO documents
-                        (doc_id, tenant_id, title, source_type, source_path, content_hash,
+                        (doc_id, tenant_id, collection_id, title, source_type, source_path, content_hash,
                          num_chunks, ingested_at, file_type, doc_structure_type)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (doc_id) DO UPDATE SET
                         tenant_id          = EXCLUDED.tenant_id,
+                        collection_id      = EXCLUDED.collection_id,
                         title              = EXCLUDED.title,
                         source_type        = EXCLUDED.source_type,
                         source_path        = EXCLUDED.source_path,
@@ -51,6 +53,7 @@ class DocumentStore:
                     (
                         doc.doc_id,
                         doc.tenant_id,
+                        doc.collection_id,
                         doc.title,
                         doc.source_type,
                         doc.source_path,
@@ -86,14 +89,33 @@ class DocumentStore:
                 )
                 return cur.fetchone() is not None
 
-    def list_documents(self, source_type: str = "", tenant_id: str = "local-dev") -> List[DocumentRecord]:
+    def list_documents(
+        self,
+        source_type: str = "",
+        tenant_id: str = "local-dev",
+        collection_id: str = "",
+    ) -> List[DocumentRecord]:
         """Return all documents for tenant, optionally filtered by source_type ('kb' or 'upload')."""
         with get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if source_type:
+                if source_type and collection_id:
+                    cur.execute(
+                        """
+                        SELECT * FROM documents
+                        WHERE tenant_id = %s AND source_type = %s AND collection_id = %s
+                        ORDER BY ingested_at
+                        """,
+                        (tenant_id, source_type, collection_id),
+                    )
+                elif source_type:
                     cur.execute(
                         "SELECT * FROM documents WHERE tenant_id = %s AND source_type = %s ORDER BY ingested_at",
                         (tenant_id, source_type),
+                    )
+                elif collection_id:
+                    cur.execute(
+                        "SELECT * FROM documents WHERE tenant_id = %s AND collection_id = %s ORDER BY ingested_at",
+                        (tenant_id, collection_id),
                     )
                 else:
                     cur.execute(
@@ -133,6 +155,23 @@ class DocumentStore:
                 rows = cur.fetchall()
         return [dict(r) for r in rows]
 
+    def list_collections(self, tenant_id: str = "local-dev") -> List[Dict[str, Any]]:
+        """Return collection IDs and document counts for the tenant."""
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT collection_id, COUNT(*) AS document_count
+                    FROM documents
+                    WHERE tenant_id = %s
+                    GROUP BY collection_id
+                    ORDER BY collection_id
+                    """,
+                    (tenant_id,),
+                )
+                rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
     def get_all_titles(self, tenant_id: str) -> List[Dict[str, str]]:
         """Return [{doc_id, title}] for all tenant documents — used by resolve_document tool."""
         with get_conn() as conn:
@@ -149,6 +188,7 @@ def _row_to_record(row: Dict[str, Any]) -> DocumentRecord:
     return DocumentRecord(
         doc_id=row.get("doc_id", ""),
         tenant_id=row.get("tenant_id") or "local-dev",
+        collection_id=row.get("collection_id") or "default",
         title=row.get("title", ""),
         source_type=row.get("source_type", ""),
         content_hash=row.get("content_hash", ""),

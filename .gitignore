@@ -44,3 +44,9 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Runtime artifacts
+data/runtime/
+new_demo_notebook/.artifacts/*
+!new_demo_notebook/.artifacts/.gitkeep
+.ipynb_checkpoints/

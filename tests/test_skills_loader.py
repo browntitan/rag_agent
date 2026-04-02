@@ -14,12 +14,17 @@ def _make_settings(tmp_path: Path) -> MagicMock:
     """Return a mock Settings that points all skill paths at tmp_path."""
     s = MagicMock()
     s.skills_backend = "local"
+    s.skills_dir = tmp_path
     s.shared_skills_path = tmp_path / "skills.md"
     s.general_agent_skills_path = tmp_path / "general_agent.md"
     s.rag_agent_skills_path = tmp_path / "rag_agent.md"
     s.supervisor_agent_skills_path = tmp_path / "supervisor_agent.md"
     s.utility_agent_skills_path = tmp_path / "utility_agent.md"
     s.basic_chat_skills_path = tmp_path / "basic_chat.md"
+    s.planner_agent_skills_path = tmp_path / "planner_agent.md"
+    s.finalizer_agent_skills_path = tmp_path / "finalizer_agent.md"
+    s.data_analyst_skills_path = tmp_path / "data_analyst_agent.md"
+    s.verifier_agent_skills_path = tmp_path / "verifier_agent.md"
     return s
 
 
@@ -38,10 +43,20 @@ class TestSkillsLoaderDefaults:
         prompt = loader.load("rag_agent")
         assert "Operating rules" in prompt
 
-    def test_all_six_agents_have_defaults(self, tmp_path):
+    def test_all_named_agents_have_defaults(self, tmp_path):
         s = _make_settings(tmp_path)
         loader = SkillsLoader(s)
-        for key in ["general_agent", "rag_agent", "supervisor_agent", "utility_agent", "basic_chat"]:
+        for key in [
+            "general_agent",
+            "rag_agent",
+            "supervisor_agent",
+            "utility_agent",
+            "basic_chat",
+            "planner_agent",
+            "finalizer_agent",
+            "verifier_agent",
+            "data_analyst_agent",
+        ]:
             result = loader.load(key)
             assert isinstance(result, str)
             assert len(result) > 10

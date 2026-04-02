@@ -41,6 +41,8 @@ def run_rag_agent(
     max_retries: int,
     session: Any,       # ChatSession — avoids circular import; accessed as session.scratchpad
     callbacks: Any = None,
+    skill_context: str = "",
+    task_context: str = "",
 ) -> Dict[str, Any]:
     """Loop-based RAG agent using LangGraph ReAct agent.
 
@@ -67,6 +69,10 @@ def run_rag_agent(
         system_prompt = load_rag_agent_skills(settings)
     except Exception:
         system_prompt = _DEFAULT_RAG_SYSTEM
+    if task_context:
+        system_prompt = f"{system_prompt}\n\n## Task Context\n{task_context}".strip()
+    if skill_context:
+        system_prompt = f"{system_prompt}\n\n## Skill Context\n{skill_context}".strip()
 
     # ------------------------------------------------------------------
     # 2. Build tools (core 11 + optional extended tools)
