@@ -11,6 +11,10 @@ from agentic_chatbot_next.memory.scope import MemoryScope
 _MEMORY_LINE = re.compile(r"^\s*(?:-|\*)?\s*([A-Za-z0-9_./ -]{2,80})\s*:\s*(.+?)\s*$")
 _MEMORY_ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_./ -]{1,80})\s*=\s*([^;\n]+)")
 _REMEMBER_THAT = re.compile(r"remember that\s+(.+?)\s+is\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
+_EXPLICIT_MEMORY_INTENT = re.compile(
+    r"\b(remember|save|store|note|keep\s+track\s+of|keep\s+in\s+mind)\b",
+    re.IGNORECASE,
+)
 
 
 class MemoryExtractor:
@@ -19,7 +23,12 @@ class MemoryExtractor:
 
     @staticmethod
     def _normalize_key(key: str) -> str:
-        return key.strip().lower().replace(" ", "_")
+        clean = key.strip().lower()
+        for prefix in ("remember ", "save ", "store ", "note "):
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):].strip()
+                break
+        return clean.replace(" ", "_")
 
     def extract_entries(self, text: str) -> List[Tuple[str, str]]:
         entries: List[Tuple[str, str]] = []
@@ -55,6 +64,9 @@ class MemoryExtractor:
                 seen.add(item)
                 entries.append(item)
         return entries
+
+    def has_explicit_memory_intent(self, text: str) -> bool:
+        return bool(_EXPLICIT_MEMORY_INTENT.search(text or ""))
 
     def save_entries(
         self,

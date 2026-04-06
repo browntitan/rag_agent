@@ -8,7 +8,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 from agentic_chatbot_next.observability.events import RuntimeEvent
 from agentic_chatbot_next.runtime.event_sink import RuntimeEventSink
 

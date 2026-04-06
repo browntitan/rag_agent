@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 
 
 @dataclass(frozen=True)

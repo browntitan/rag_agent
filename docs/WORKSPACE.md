@@ -24,14 +24,21 @@ turns. That lets the runtime:
 
 The workspace is created by the live next runtime in two common paths:
 
-1. `RuntimeService.process_turn(...)` when a session first needs a workspace
+1. `RuntimeService.process_turn(...)`, which eagerly opens the canonical session workspace
+   for service-handled turns when `WORKSPACE_DIR` is configured
 2. `POST /v1/ingest/documents` before the first chat turn, so uploaded files are already
    available in the session-scoped workspace
+
+`POST /v1/upload` can also attempt a workspace copy for active sessions, but it is not the
+guaranteed pre-chat workspace-seeding path. In the current code that convenience copy looks
+for a legacy `WORKSPACE_DIR/<conversation_id>/` directory instead of opening the canonical
+session workspace.
 
 ## Runtime bridge
 
 `SessionState.workspace_root` stores the workspace path. `ToolContext` reconstructs the
-workspace handle lazily for tool code.
+workspace handle lazily for tool code. Scoped worker jobs inherit the same
+`SessionState.workspace_root`; the runtime does not create per-job workspaces today.
 
 ## What belongs here
 

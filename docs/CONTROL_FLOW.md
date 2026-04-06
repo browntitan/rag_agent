@@ -33,9 +33,10 @@ The FastAPI gateway and CLI normalize user input, conversation scope, and upload
 
 `RuntimeService.process_turn(...)`:
 
-1. opens the session workspace when needed
+1. eagerly opens the canonical session workspace when `WORKSPACE_DIR` is configured
 2. ensures the KB is indexed for the tenant
-3. ingests uploads when present
+3. when uploads are present, ingests them and appends a RAG-generated upload summary into
+   session history
 4. calls the router
 5. emits a router-decision event
 6. hands off to `RuntimeKernel.process_basic_turn(...)` or
@@ -64,7 +65,7 @@ The FastAPI gateway and CLI normalize user input, conversation scope, and upload
 3. appends the user turn
 4. persists state and transcript before execution
 5. resolves the initial agent from `data/agents/*.md`
-6. builds callbacks and emits `agent_turn_started`
+6. builds callbacks and emits `turn_accepted`, `agent_run_started`, and `agent_turn_started`
 7. delegates to `run_agent(...)`
 
 ## 5. Non-coordinator agent execution
@@ -91,20 +92,28 @@ Workers run as durable jobs with mailbox continuation and notification reinjecti
 
 ## 7. Query loop execution modes
 
-`QueryLoop.run(...)` dispatches by agent mode:
+`QueryLoop.run(...)` resolves skill context for agents that declare `skill_scope`, then
+dispatches by mode:
 
-- `basic`
-- `react`
-- `rag`
-- `planner`
-- `finalizer`
-- `verifier`
-- `memory_maintainer`
+- `react`, `planner`, `finalizer`, and `verifier` build prompts from base prompt,
+  optional task/worker context, skill context, and bounded file-memory context
+- `rag` calls `run_rag_contract(...)` directly with recent conversation context and
+  uploaded doc ids
+- `memory_maintainer` skips prompt/model execution and runs direct heuristic extraction
 
-The loop also injects:
+The class still contains a `basic` handler for parity, but the normal BASIC service path
+goes straight through `RuntimeKernel.process_basic_turn(...)` rather than through
+`QueryLoop.run(...)`.
 
-- skill context
-- bounded file-memory context
+For `react` agents, `QueryLoop` then delegates to
+`src/agentic_chatbot_next/general_agent.py`.
+
+That executor:
+
+- uses LangGraph `create_react_agent(...)` when the model supports tool binding
+- falls back to a plan-execute loop when tool binding is unavailable or forced
+- keeps `data_analyst` on the guided `plan_execute` path when the agent metadata requests it
+- owns recovery from native tool-loop failure, missing final answers, and truncated outputs
 
 ## 8. Persistence timing
 
@@ -123,11 +132,20 @@ Local runtime events are the source of truth.
 Current event families include:
 
 - router decisions
+- turn acceptance / completion / failure
 - basic-turn lifecycle
+- agent-run lifecycle
 - agent-turn lifecycle
 - model lifecycle
 - tool lifecycle
 - coordinator planning/batch/finalizer/verifier events
-- worker-job and mailbox events
+- worker-job lifecycle, mailbox, and notification append events
 - notification append events
 - memory extraction events
+
+The post-turn memory path is heuristic today, not a dedicated maintenance-agent loop. It writes
+conversation memory from structured entries in the latest user turn and only writes user memory
+when the turn contains explicit memory intent.
+
+Worker failures currently surface as `job_failed`; there is no separate
+`worker_agent_failed` runtime event in the live implementation.

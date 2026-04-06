@@ -35,10 +35,10 @@ The data analyst runtime agent receives:
 
 ## Invocation paths
 
-The current orchestrator reaches this agent in two ways:
+The current runtime reaches this agent in two ways:
 
 - directly, when the router suggests `data_analyst`
-- indirectly, when another agent spawns it as a worker
+- indirectly, when the `coordinator` spawns it as a worker
 
 ## Operating workflow
 
@@ -51,19 +51,33 @@ The agent is still expected to follow a plan-first workflow:
 5. summarize findings
 
 That behavior comes from the prompt and tool surface, not from a custom graph wrapper.
+The runtime also enforces `execution_strategy: plan_execute` in the agent metadata, so the
+live data-analyst path stays on the guided plan-execute executor even when native tool
+binding is available.
 
 ## Workspace model
 
 The normal execution path now assumes a persistent workspace:
 
-- `data/workspaces/<session_id>/`
+- `data/workspaces/<filesystem_key(session_id)>/`
 - bind-mounted into Docker at `/workspace`
 
-That workspace can now be prepared either by the first chat turn or proactively by
-`POST /v1/ingest/documents`, which copies uploaded files into the same session-scoped
-directory before the analyst runs.
+That workspace is guaranteed to be prepared in two main ways:
+
+- every `RuntimeService.process_turn(...)` call, which eagerly opens the canonical
+  session workspace when workspaces are enabled
+- `POST /v1/ingest/documents`, which proactively opens the canonical session workspace and
+  copies host-visible files into it before the analyst runs
+
+`POST /v1/upload` is narrower: it ingests multipart frontend uploads and copies them into
+the KB, with workspace copying treated as a best-effort convenience rather than the
+canonical pre-chat seeding path. In the current implementation that convenience copy checks
+for a legacy `WORKSPACE_DIR/<conversation_id>/` directory rather than the canonical
+`filesystem_key(session_id)` workspace path.
 
 This means files can survive across turns and across repeated `execute_code` calls.
+Scoped worker jobs also inherit the same session workspace; there is no per-job analyst
+workspace today.
 
 ### Typical flow
 

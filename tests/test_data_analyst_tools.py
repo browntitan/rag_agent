@@ -22,6 +22,7 @@ def _make_session(scratchpad=None):
     session = MagicMock()
     session.scratchpad = scratchpad or {}
     session.tenant_id = "test-tenant"
+    session.workspace = None
     return session
 
 
@@ -70,7 +71,7 @@ class TestLoadDatasetCsv:
         stores = _make_stores(source_path=str(csv_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
 
@@ -92,7 +93,7 @@ class TestLoadDatasetCsv:
         stores = _make_stores(source_path=str(csv_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
 
@@ -109,7 +110,7 @@ class TestLoadDatasetCsv:
         stores = _make_stores(source_path=str(csv_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         load_tool.invoke({"doc_id": "doc_abc"})
@@ -126,7 +127,7 @@ class TestLoadDatasetCsv:
         stores = _make_stores(source_path=str(csv_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         result = json.loads(load_tool.invoke({"doc_id": "doc123"}))
@@ -148,7 +149,7 @@ class TestLoadDatasetXlsx:
         stores = _make_stores(source_path=str(xlsx_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         result = json.loads(load_tool.invoke({"doc_id": "xlsdoc"}))
@@ -171,7 +172,7 @@ class TestLoadDatasetErrors:
         stores = _make_stores(source_path=str(txt_file))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         result = json.loads(load_tool.invoke({"doc_id": "bad_doc"}))
@@ -185,7 +186,7 @@ class TestLoadDatasetErrors:
         stores.doc_store.get_document.return_value = None
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         result = json.loads(load_tool.invoke({"doc_id": "nonexistent"}))
@@ -198,7 +199,7 @@ class TestLoadDatasetErrors:
         stores = _make_stores(source_path=str(tmp_path / "ghost.csv"))
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         load_tool = next(t for t in tools if t.name == "load_dataset")
         result = json.loads(load_tool.invoke({"doc_id": "ghost_doc"}))
@@ -265,7 +266,7 @@ class TestInspectColumnsNumeric:
         stores = _make_stores()
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         inspect_tool = next(t for t in tools if t.name == "inspect_columns")
         result = json.loads(inspect_tool.invoke({"doc_id": "d1", "columns": "score"}))
@@ -288,7 +289,7 @@ class TestInspectColumnsNumeric:
         stores = _make_stores()
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         inspect_tool = next(t for t in tools if t.name == "inspect_columns")
         result = json.loads(inspect_tool.invoke({"doc_id": "d2", "columns": "v"}))
@@ -311,7 +312,7 @@ class TestInspectColumnsString:
         stores = _make_stores()
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         inspect_tool = next(t for t in tools if t.name == "inspect_columns")
         result = json.loads(inspect_tool.invoke({"doc_id": "d3", "columns": "cat"}))
@@ -333,7 +334,7 @@ class TestInspectColumnsBeforeLoad:
         stores = _make_stores()
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         inspect_tool = next(t for t in tools if t.name == "inspect_columns")
         result = json.loads(inspect_tool.invoke({"doc_id": "not_loaded", "columns": ""}))
@@ -348,7 +349,7 @@ class TestInspectColumnsBeforeLoad:
 
 class TestExecuteCodeSuccess:
     def test_returns_stdout_on_success(self, tmp_path):
-        from agentic_chatbot.sandbox.docker_executor import SandboxResult
+        from agentic_chatbot_next.sandbox.docker_exec import SandboxResult
 
         csv_file = tmp_path / "data.csv"
         _write_csv(csv_file, "a,b\n1,2\n")
@@ -362,11 +363,11 @@ class TestExecuteCodeSuccess:
         )
 
         with patch(
-            "agentic_chatbot.tools.data_analyst_tools.DockerSandboxExecutor"
+            "agentic_chatbot_next.tools.data_analyst_tools.DockerSandboxExecutor"
         ) as MockExec:
             MockExec.return_value.execute.return_value = mock_result
 
-            from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+            from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
             tools = make_data_analyst_tools(stores, session, settings=settings)
             exec_tool = next(t for t in tools if t.name == "execute_code")
             result = json.loads(exec_tool.invoke({
@@ -380,7 +381,7 @@ class TestExecuteCodeSuccess:
 
 class TestExecuteCodeError:
     def test_stderr_returned_on_failure(self, tmp_path):
-        from agentic_chatbot.sandbox.docker_executor import SandboxResult
+        from agentic_chatbot_next.sandbox.docker_exec import SandboxResult
 
         csv_file = tmp_path / "data.csv"
         _write_csv(csv_file, "a\n1\n")
@@ -397,11 +398,11 @@ class TestExecuteCodeError:
         )
 
         with patch(
-            "agentic_chatbot.tools.data_analyst_tools.DockerSandboxExecutor"
+            "agentic_chatbot_next.tools.data_analyst_tools.DockerSandboxExecutor"
         ) as MockExec:
             MockExec.return_value.execute.return_value = mock_result
 
-            from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+            from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
             tools = make_data_analyst_tools(stores, session, settings=settings)
             exec_tool = next(t for t in tools if t.name == "execute_code")
             result = json.loads(exec_tool.invoke({
@@ -415,7 +416,7 @@ class TestExecuteCodeError:
 
 class TestExecuteCodeTimeout:
     def test_timeout_message_returned(self):
-        from agentic_chatbot.sandbox.docker_executor import SandboxResult
+        from agentic_chatbot_next.sandbox.docker_exec import SandboxResult
 
         session = _make_session()
         stores = _make_stores()
@@ -429,11 +430,11 @@ class TestExecuteCodeTimeout:
         )
 
         with patch(
-            "agentic_chatbot.tools.data_analyst_tools.DockerSandboxExecutor"
+            "agentic_chatbot_next.tools.data_analyst_tools.DockerSandboxExecutor"
         ) as MockExec:
             MockExec.return_value.execute.return_value = timeout_result
 
-            from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+            from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
             tools = make_data_analyst_tools(stores, session, settings=settings)
             exec_tool = next(t for t in tools if t.name == "execute_code")
             result = json.loads(exec_tool.invoke({"code": "import time; time.sleep(999)"}))
@@ -444,18 +445,18 @@ class TestExecuteCodeTimeout:
 
 class TestExecuteCodeDockerUnavailable:
     def test_graceful_error_when_docker_unavailable(self):
-        from agentic_chatbot.sandbox.exceptions import SandboxUnavailableError
+        from agentic_chatbot_next.sandbox.exceptions import SandboxUnavailableError
 
         session = _make_session()
         stores = _make_stores()
         settings = _make_settings()
 
         with patch(
-            "agentic_chatbot.tools.data_analyst_tools.DockerSandboxExecutor"
+            "agentic_chatbot_next.tools.data_analyst_tools.DockerSandboxExecutor"
         ) as MockExec:
             MockExec.return_value.execute.side_effect = SandboxUnavailableError("Docker not running")
 
-            from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+            from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
             tools = make_data_analyst_tools(stores, session, settings=settings)
             exec_tool = next(t for t in tools if t.name == "execute_code")
             result = json.loads(exec_tool.invoke({"code": "print('hello')"}))
@@ -474,7 +475,7 @@ class TestScratchpadTools:
         stores = _make_stores()
         settings = _make_settings()
 
-        from agentic_chatbot.tools.data_analyst_tools import make_data_analyst_tools
+        from agentic_chatbot_next.tools.data_analyst_tools import make_data_analyst_tools
         tools = make_data_analyst_tools(stores, session, settings=settings)
         write = next(t for t in tools if t.name == "scratchpad_write")
         read = next(t for t in tools if t.name == "scratchpad_read")

@@ -9,9 +9,11 @@ from langchain_core.messages import AIMessage
 
 from agentic_chatbot_next.context import build_local_context
 from agentic_chatbot_next.rag import (
+    KBCoverageStatus,
     KnowledgeStores,
     SkillIndexSync,
     ensure_kb_indexed,
+    get_kb_coverage_status,
     ingest_paths,
     load_basic_chat_skills,
     load_stores,
@@ -50,6 +52,7 @@ class RuntimeService:
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
         self._basic_chat_system_prompt = load_basic_chat_skills(ctx.settings)
+        self._kb_status_by_tenant: Dict[str, KBCoverageStatus] = {}
         self.kernel = RuntimeKernel(ctx.settings, providers=ctx.providers, stores=ctx.stores)
         if getattr(ctx.settings, "agent_runtime_mode", ""):
             logger.info(
@@ -84,13 +87,56 @@ class RuntimeService:
         except Exception as exc:
             logger.warning("Could not open session workspace: %s", exc)
 
-    def _ensure_kb_ready(self, tenant_id: str) -> None:
+    def _ensure_kb_ready(self, tenant_id: str, *, attempt_sync: bool | None = None) -> KBCoverageStatus | None:
         if self.ctx.stores is None or not hasattr(self.ctx.stores, "doc_store"):
-            return
+            return None
         try:
-            ensure_kb_indexed(self.ctx.settings, self.ctx.stores, tenant_id=tenant_id)
+            status = ensure_kb_indexed(
+                self.ctx.settings,
+                self.ctx.stores,
+                tenant_id=tenant_id,
+                collection_id=self.ctx.settings.default_collection_id,
+                attempt_sync=attempt_sync,
+            )
+            self._kb_status_by_tenant[tenant_id] = status
+            if not status.ready:
+                logger.warning(
+                    "KB not ready for tenant=%s collection=%s reason=%s missing=%d",
+                    tenant_id,
+                    status.collection_id,
+                    status.reason,
+                    len(status.missing_source_paths),
+                )
+            return status
         except Exception as exc:
             logger.warning("Could not ensure KB index readiness: %s", exc)
+            return None
+
+    def get_kb_status(
+        self,
+        tenant_id: str | None = None,
+        *,
+        refresh: bool = False,
+        attempt_sync: bool = False,
+    ) -> KBCoverageStatus | None:
+        effective_tenant_id = tenant_id or self.ctx.settings.default_tenant_id
+        if self.ctx.stores is None or not hasattr(self.ctx.stores, "doc_store"):
+            return None
+        if refresh or effective_tenant_id not in self._kb_status_by_tenant:
+            if attempt_sync:
+                return self._ensure_kb_ready(effective_tenant_id, attempt_sync=True)
+            try:
+                status = get_kb_coverage_status(
+                    self.ctx.settings,
+                    self.ctx.stores,
+                    tenant_id=effective_tenant_id,
+                    collection_id=self.ctx.settings.default_collection_id,
+                )
+            except Exception as exc:
+                logger.warning("Could not read KB coverage status: %s", exc)
+                return self._kb_status_by_tenant.get(effective_tenant_id)
+            self._kb_status_by_tenant[effective_tenant_id] = status
+        return self._kb_status_by_tenant.get(effective_tenant_id)
 
     def ingest_and_summarize_uploads(
         self,
@@ -130,6 +176,7 @@ class RuntimeService:
         if not doc_ids:
             return [], "No documents were ingested (files missing or already indexed)."
 
+        rag_providers = self.kernel.resolve_providers_for_agent("rag_worker") or self.ctx.providers
         summary_query = (
             "Summarize the uploaded documents. Provide:\n"
             "1) A 6-bullet executive summary\n"
@@ -144,6 +191,7 @@ class RuntimeService:
             query=summary_query,
             conversation_context="User uploaded documents.",
             preferred_doc_ids=doc_ids,
+            providers=rag_providers,
             callbacks=callbacks,
         )
         rendered = render_rag_contract(rag_out)
@@ -157,12 +205,13 @@ class RuntimeService:
         query: str,
         conversation_context: str,
         preferred_doc_ids: List[str],
+        providers: ProviderBundle,
         callbacks: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         contract = run_rag_contract(
             self.ctx.settings,
             self.ctx.stores,
-            providers=self.ctx.providers,
+            providers=providers,
             session=session,
             query=query,
             conversation_context=conversation_context,
@@ -182,10 +231,14 @@ class RuntimeService:
         user_text: str,
         upload_paths: Optional[List[Path]] = None,
         force_agent: bool = False,
+        extra_callbacks: Optional[List[Any]] = None,
     ) -> str:
         upload_paths = upload_paths or []
         self._ensure_workspace(session)
-        self._ensure_kb_ready(session.tenant_id)
+        self._ensure_kb_ready(
+            session.tenant_id,
+            attempt_sync=bool(getattr(self.ctx.settings, "seed_demo_kb_on_startup", True)),
+        )
 
         if upload_paths:
             self.ingest_and_summarize_uploads(session, upload_paths)
@@ -197,6 +250,7 @@ class RuntimeService:
             has_attachments=bool(upload_paths),
             history_summary=_summarise_history(session.messages, n=2),
             force_agent=force_agent,
+            registry=self.kernel.registry,
         )
 
         meta = {
@@ -224,22 +278,25 @@ class RuntimeService:
         )
 
         if decision.route == "BASIC":
+            basic_providers = self.kernel.resolve_providers_for_agent("basic") or self.ctx.providers
             text = self.kernel.process_basic_turn(
                 session,
                 user_text=user_text,
                 system_prompt=self._basic_chat_system_prompt,
-                chat_llm=self.ctx.providers.chat,
+                chat_llm=basic_providers.chat,
                 route_metadata=meta,
+                callbacks=extra_callbacks,
             )
             if getattr(self.ctx.settings, "clear_scratchpad_per_turn", False):
                 session.clear_scratchpad()
             return text
 
-        requested_agent = choose_agent_name(self.ctx.settings, decision) or "general"
+        requested_agent = choose_agent_name(self.ctx.settings, decision, registry=self.kernel.registry) or "general"
         try:
             text = self.kernel.process_agent_turn(
                 session,
                 user_text=user_text,
+                callbacks=extra_callbacks,
                 agent_name=requested_agent,
                 route_metadata=meta,
             )

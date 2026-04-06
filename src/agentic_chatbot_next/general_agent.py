@@ -69,6 +69,116 @@ def _sanitize_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _message_metadata(message: Any) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {}
+    metadata.update(dict(getattr(message, "response_metadata", {}) or {}))
+    metadata.update(dict(getattr(message, "additional_kwargs", {}) or {}))
+    return metadata
+
+
+def _is_output_truncated(message: Any) -> bool:
+    metadata = _message_metadata(message)
+    finish_reason = str(
+        metadata.get("finish_reason")
+        or metadata.get("stop_reason")
+        or metadata.get("reason")
+        or metadata.get("completion_reason")
+        or ""
+    ).strip().lower()
+    return finish_reason in {"length", "max_tokens", "max_output_tokens"}
+
+
+def _collect_tool_results(messages: List[Any]) -> List[Dict[str, Any]]:
+    tool_results: List[Dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        content = _content_text(message)
+        if not content:
+            continue
+        payload = extract_json(content)
+        tool_results.append(
+            {
+                "tool_call_id": str(getattr(message, "tool_call_id", "") or ""),
+                "content": content,
+                "json": payload if isinstance(payload, dict) else None,
+            }
+        )
+    return tool_results
+
+
+def _synthesize_tool_results(
+    chat_llm: Any,
+    *,
+    user_text: str,
+    tool_results: List[Dict[str, Any]],
+    callbacks: List[Any],
+    system_prompt: str,
+    recovery_reason: str,
+) -> str:
+    synth_system = (
+        "You are recovering a final answer after a tool-using agent run.\n"
+        "Use the tool results to answer the user's request clearly and concisely.\n"
+        "Preserve citations and uncertainty, and do not dump raw JSON.\n"
+        f"Recovery reason: {recovery_reason}."
+    )
+    if system_prompt.strip():
+        synth_system += "\n\nRole Instructions:\n" + system_prompt.strip()
+    synth_user = f"USER_REQUEST: {user_text}\n\nTOOL_RESULTS: {json.dumps(tool_results, ensure_ascii=False)}"
+    response = chat_llm.invoke(
+        [SystemMessage(content=synth_system), HumanMessage(content=synth_user)],
+        config={"callbacks": callbacks},
+    )
+    return _content_text(response) or str(response)
+
+
+def _finalize_messages(
+    chat_llm: Any,
+    *,
+    messages: List[Any],
+    user_text: str,
+    callbacks: List[Any],
+    system_prompt: str,
+) -> tuple[str, List[str]]:
+    recovery: List[str] = []
+    final_message = None
+    final_text = ""
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        final_message = message
+        final_text = _content_text(message)
+        if final_text:
+            break
+    if final_text and final_message is not None and not _is_output_truncated(final_message):
+        return final_text, recovery
+    if final_message is not None and _is_output_truncated(final_message):
+        recovery.append("output_truncated")
+    else:
+        recovery.append("no_final_answer")
+    rag_text = _render_rag_tool_fallback(messages)
+    if rag_text:
+        recovery.append("render_rag_tool_fallback")
+        return rag_text, recovery
+    tool_results = _collect_tool_results(messages)
+    if tool_results:
+        recovery.append("tool_result_synthesis")
+        synthesized = _synthesize_tool_results(
+            chat_llm,
+            user_text=user_text,
+            tool_results=tool_results,
+            callbacks=callbacks,
+            system_prompt=system_prompt,
+            recovery_reason=",".join(recovery),
+        ).strip()
+        if synthesized:
+            return synthesized, recovery
+    if final_text:
+        recovery.append("truncated_output_notice")
+        return f"{final_text}\n\nNote: the previous response may have been truncated.".strip(), recovery
+    return "I couldn't produce a complete final answer from the tool run. Please try again with a narrower request.", recovery
+
+
 def _invoke_tool_with_trace(
     tool_map: Dict[str, Any],
     messages: List[Any],
@@ -309,34 +419,32 @@ def run_general_agent(
         )
         updated_messages: List[Any] = result["messages"]
     except Exception as exc:
-        logger.warning("LangGraph ReAct agent stopped early: %s", exc)
-        final_text = (
-            "I reached the maximum number of tool calls for this turn. "
-            "If you want, tell me which part to focus on next."
+        logger.warning("LangGraph ReAct agent failed; falling back to plan-execute recovery: %s", exc)
+        final_text, updated_messages, metadata = _run_plan_execute_fallback(
+            chat_llm,
+            tools=tools,
+            messages=msgs,
+            user_text=user_text,
+            callbacks=callbacks,
+            max_tool_calls=max_tool_calls,
+            system_prompt=effective_prompt,
         )
-        error_messages = list(msgs) + [AIMessage(content=final_text)]
-        return final_text, error_messages, {
-            "steps": max_steps,
-            "tool_calls": max_tool_calls,
-            "budget_exceeded": True,
-        }
+        metadata["recovery"] = ["langgraph_error"]
+        metadata["langgraph_error"] = str(exc)
+        return final_text, updated_messages, metadata
 
     tool_calls_used = sum(1 for message in updated_messages if isinstance(message, ToolMessage))
     steps = sum(1 for message in updated_messages if isinstance(message, AIMessage))
-    final_text = ""
-    for message in reversed(updated_messages):
-        if not isinstance(message, AIMessage):
-            continue
-        final_text = _content_text(message)
-        if final_text:
-            break
-    if not final_text:
-        final_text = _render_rag_tool_fallback(updated_messages)
-        if final_text:
-            updated_messages = list(updated_messages) + [AIMessage(content=final_text)]
-    if not final_text:
-        final_text = "No response generated."
-    return str(final_text), updated_messages, {"steps": steps, "tool_calls": tool_calls_used}
+    final_text, recovery = _finalize_messages(
+        chat_llm,
+        messages=updated_messages,
+        user_text=user_text,
+        callbacks=callbacks,
+        system_prompt=effective_prompt,
+    )
+    if recovery:
+        updated_messages = list(updated_messages) + [AIMessage(content=final_text)]
+    return str(final_text), updated_messages, {"steps": steps, "tool_calls": tool_calls_used, "recovery": recovery}
 
 
 def _run_plan_execute_fallback(
@@ -466,6 +574,31 @@ def _run_plan_execute_fallback(
         [SystemMessage(content=synth_system), HumanMessage(content=synth_user)],
         config={"callbacks": callbacks},
     )
-    final_text = getattr(synth_response, "content", None) or str(synth_response)
+    final_text = _content_text(synth_response) or str(synth_response)
+    recovery: List[str] = []
+    if _is_output_truncated(synth_response):
+        recovery.append("output_truncated")
+        repaired = _synthesize_tool_results(
+            chat_llm,
+            user_text=user_text,
+            tool_results=tool_results,
+            callbacks=callbacks,
+            system_prompt=system_prompt,
+            recovery_reason="output_truncated",
+        ).strip()
+        if repaired:
+            final_text = repaired
+            recovery.append("tool_result_synthesis")
+    if not str(final_text).strip():
+        recovery.append("no_final_answer")
+        fallback_text, fallback_recovery = _finalize_messages(
+            chat_llm,
+            messages=messages,
+            user_text=user_text,
+            callbacks=callbacks,
+            system_prompt=system_prompt,
+        )
+        final_text = fallback_text
+        recovery.extend(fallback_recovery)
     messages.append(AIMessage(content=str(final_text)))
-    return str(final_text), messages, {"fallback": "plan_execute", "tool_calls": tool_calls}
+    return str(final_text), messages, {"fallback": "plan_execute", "tool_calls": tool_calls, "recovery": recovery}

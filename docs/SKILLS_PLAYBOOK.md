@@ -14,7 +14,7 @@ Examples:
 - `data_analyst_agent.md`
 - `planner_agent.md`
 - `finalizer_agent.md`
-- `supervisor_agent.md` for the opt-in `coordinator`
+- `supervisor_agent.md` for the live `coordinator`
 
 These files define stable role behavior and should stay compact.
 
@@ -48,15 +48,15 @@ flowchart LR
     files["data/skill_packs/**/*.md"]
     sync["SkillIndexSync"]
     db["skills + skill_chunks"]
-    resolver["SkillContextResolver"]
-    runtime["HybridRuntimeLoop"]
+    resolver["SkillContextResolver / SkillResolver"]
+    runtime["QueryLoop / SkillRuntime"]
 
     files --> sync --> db --> resolver --> runtime
 ```
 
 ## Runtime flow in the current kernel
 
-For a runtime agent that has `skill_agent_scope` set:
+For a prompt-backed runtime agent that has `skill_scope` set and runs through `QueryLoop`:
 
 1. the loop resolves bounded skill context for the current user text
 2. the context is attached to `ToolContext.skill_context`
@@ -68,21 +68,29 @@ inject retrieved skills.
 
 ## Where skill retrieval is used
 
-Current runtime roles that normally use retrieved skill context:
+Current runtime roles where retrieved skill context materially affects execution:
 
 - `general`
 - `utility`
 - `data_analyst`
-- `rag_worker`
 - `planner`
 - `finalizer`
 - `verifier`
-- `memory_maintainer`
 
-The exact scope is controlled by `AgentDefinition.skill_agent_scope`.
+The exact scope is controlled by `AgentDefinition.skill_scope`.
 
-`coordinator` is the main exception in the live runtime: its built-in definition leaves
-`skill_agent_scope=""`, so it does not normally receive automatic retrieved skill context.
+Additional live nuance:
+
+- `rag_worker` still declares `skill_scope`, and `QueryLoop` currently resolves that
+  context, but `run_rag_contract(...)` discards `skill_context` today
+- `memory_maintainer` also declares `skill_scope`, but its dedicated mode bypasses
+  prompt/model execution and does not consume the resolved skill block
+- the normal BASIC route goes straight through `RuntimeKernel.process_basic_turn(...)`, so
+  the `basic` registry role is not the main automatic skill-injection path
+
+`coordinator` is the main exception in the live runtime. It has role metadata in the
+registry, but its `coordinator` mode is orchestrated directly by the kernel rather than by
+the normal `QueryLoop` skill-context path.
 
 ## Relationship to `search_skills`
 

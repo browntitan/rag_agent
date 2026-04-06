@@ -1,8 +1,11 @@
 import { useState, useCallback } from 'react'
-import { uploadFiles } from '../api/client'
+import { getErrorMessage, isBackendUnavailableError, uploadFiles } from '../api/client'
 import type { UploadResult } from '../types'
 
-export function useFileUpload(conversationId: string) {
+export function useFileUpload(
+  conversationId: string,
+  onBackendUnavailable?: (message: string) => void,
+) {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
   const [lastError, setLastError] = useState<string | null>(null)
@@ -20,13 +23,16 @@ export function useFileUpload(conversationId: string) {
       }
       return result
     } catch (error) {
-      const msg = (error as Error).message
+      const msg = getErrorMessage(error)
+      if (isBackendUnavailableError(error)) {
+        onBackendUnavailable?.(msg)
+      }
       setLastError(msg)
       return null
     } finally {
       setIsUploading(false)
     }
-  }, [conversationId])
+  }, [conversationId, onBackendUnavailable])
 
   return { isUploading, uploadedFiles, lastError, upload }
 }

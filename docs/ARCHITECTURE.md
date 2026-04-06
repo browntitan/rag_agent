@@ -16,8 +16,8 @@ executor, while the top-level orchestration is plain Python code in the next run
 
 ### Entrypoints
 
-- CLI: `src/agentic_chatbot/cli.py`
-- FastAPI gateway: `src/agentic_chatbot/api/main.py`
+- CLI: `src/agentic_chatbot_next/cli.py`
+- FastAPI gateway: `src/agentic_chatbot_next/api/main.py`
 
 Both entrypoints build `RuntimeService` from `src/agentic_chatbot_next/app/service.py`.
 
@@ -25,8 +25,8 @@ Both entrypoints build `RuntimeService` from `src/agentic_chatbot_next/app/servi
 
 `RuntimeService` owns:
 
-- workspace setup
-- upload ingest kickoff
+- eager session-workspace open when `WORKSPACE_DIR` is configured
+- upload ingest and upload-summary kickoff
 - route selection
 - choosing the initial agent
 - handoff into the session kernel
@@ -53,18 +53,30 @@ Both entrypoints build `RuntimeService` from `src/agentic_chatbot_next/app/servi
 
 ### Query loop
 
-`QueryLoop` in `src/agentic_chatbot_next/runtime/query_loop.py` owns per-agent execution.
+`QueryLoop` in `src/agentic_chatbot_next/runtime/query_loop.py` is the mode dispatcher
+for non-coordinator agents.
 
 It handles:
 
-- prompt assembly
-- skill-context injection
-- memory-context injection
-- basic execution
-- react execution
-- RAG worker execution
+- skill-context resolution for agents with `skill_scope`
+- prompt assembly for prompt-backed modes in the order: base agent prompt,
+  optional task/worker context, skill context, memory context
+- dispatch to the react executor in `src/agentic_chatbot_next/general_agent.py`
 - planner / finalizer / verifier execution
-- dedicated memory-maintainer execution
+- direct RAG worker execution via `run_rag_contract(...)`
+- direct memory-maintainer execution via heuristic extraction
+
+For `react` agents, the actual tool-using turn loop is not implemented entirely inside
+`QueryLoop`. `QueryLoop` prepares the run and then delegates to `general_agent.py`, which
+uses LangGraph ReAct when native tool binding is available and a plan-execute fallback
+otherwise.
+
+Two live exceptions matter:
+
+- the `rag` mode does not build or use a system prompt; it passes recent conversation
+  context and uploaded doc ids into `run_rag_contract(...)`
+- the `memory_maintainer` mode does not run a model or ReAct loop; it directly extracts
+  structured key/value entries from recent messages or the delegated prompt
 
 ### Agent registry
 
@@ -90,6 +102,19 @@ The current split is:
 - tools change or inspect the outside world
 - skills inject bounded operating guidance into prompts
 
+The live extension surface is currently internal to the repository:
+
+- Python-defined tool registries
+- markdown-defined agents
+- retrieved skill-pack context
+
+Broader plugin or MCP-driven extension loading is not part of the live next-runtime contract
+today.
+
+The repo also contains helper tool factories under `src/agentic_chatbot_next/rag/`,
+but the live `rag_worker` and `rag_agent_tool` paths do not currently assemble those
+toolkits.
+
 ### RAG
 
 The live RAG flow lives under `src/agentic_chatbot_next/rag/`.
@@ -110,6 +135,14 @@ The live runtime uses file-backed memory under `data/memory/...`.
 
 Authoritative state is written to `index.json`. Human-readable `MEMORY.md` and
 `topics/*.md` are derived outputs.
+
+Post-turn memory maintenance currently uses a heuristic extractor over the latest user turn.
+Conversation-scope entries may be written from structured key/value text, while user-scope
+entries require explicit memory intent such as "remember" or "save".
+
+The delegated `memory_maintainer` role still exists for explicit worker use, but the normal
+post-turn memory path is kernel-owned heuristic extraction rather than an automatic delegated
+agent run.
 
 ### Persistence
 
@@ -149,8 +182,3 @@ flowchart TD
     agent --> runtime
     jobs --> runtime
 ```
-
-## Legacy status
-
-`src/agentic_chatbot/runtime/*` is no longer the live execution path. It remains in the
-repository as migration/reference code only.

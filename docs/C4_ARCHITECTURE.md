@@ -25,6 +25,7 @@ flowchart TD
     router["Router"]
     kernel["RuntimeKernel"]
     loop["QueryLoop"]
+    react["general_agent.py"]
     registry["AgentRegistry"]
     jobs["RuntimeJobManager"]
     tools["Tools / Skills / Memory / RAG"]
@@ -34,13 +35,17 @@ flowchart TD
     kernel --> registry
     kernel --> loop
     kernel --> jobs
+    loop --> react
     loop --> tools
+    react --> tools
 ```
 
 ## Component notes
 
 - `RuntimeService` is the live service boundary
-- `RuntimeKernel` is the persisted session kernel
-- `QueryLoop` is the per-agent execution engine
+- `RuntimeKernel` is the persisted session kernel that owns session state, jobs, and notifications
+- `QueryLoop` dispatches by agent mode; prompt-backed modes get prompt, memory, and skill
+  context, while `rag` and `memory_maintainer` use direct execution paths
+- `general_agent.py` is the live react executor for tool-using `react` agents
 - `AgentRegistry` loads markdown-defined roles from `data/agents/*.md`
 - `RuntimeJobManager` owns durable workers and mailboxes

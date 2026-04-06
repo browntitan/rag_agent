@@ -7,6 +7,11 @@ export interface Message {
   steps?: ProgressEvent[]   // agent steps accumulated during streaming
 }
 
+export interface BackendStatus {
+  ready: boolean
+  message?: string
+}
+
 export interface UploadResult {
   object: string
   tenant_id: string

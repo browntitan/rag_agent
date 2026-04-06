@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from agentic_chatbot.sandbox.exceptions import SandboxUnavailableError
+from agentic_chatbot_next.sandbox.exceptions import SandboxUnavailableError
 
 logger = logging.getLogger(__name__)
 

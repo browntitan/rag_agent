@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 
 DEFAULT_JUDGE_GRADING_PROMPT = (
     "You are a retrieval relevance grader.\n"

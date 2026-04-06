@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
+from agentic_chatbot_next.contracts.agents import AgentDefinition
+from agentic_chatbot_next.contracts.messages import SessionState
 from agentic_chatbot_next.agents.registry import AgentRegistry
 from agentic_chatbot_next.session import ChatSession
 from agentic_chatbot_next.runtime.context import RuntimePaths
@@ -117,7 +119,10 @@ def test_kernel_serializes_parallel_worker_batches_for_local_ollama(tmp_path: Pa
     )
 
     should_run_parallel = kernel._should_run_task_batch_in_parallel(
-        batch=[{"mode": "parallel"}, {"mode": "parallel"}],
+        batch=[
+            {"mode": "parallel", "executor": "general"},
+            {"mode": "parallel", "executor": "memory_maintainer"},
+        ],
         real_jobs=[SimpleNamespace(job_id="job_1"), SimpleNamespace(job_id="job_2")],
     )
 
@@ -138,11 +143,38 @@ def test_kernel_keeps_parallel_worker_batches_for_non_ollama_providers(tmp_path:
     )
 
     should_run_parallel = kernel._should_run_task_batch_in_parallel(
-        batch=[{"mode": "parallel"}, {"mode": "parallel"}],
+        batch=[
+            {"mode": "parallel", "executor": "general"},
+            {"mode": "parallel", "executor": "memory_maintainer"},
+        ],
         real_jobs=[SimpleNamespace(job_id="job_1"), SimpleNamespace(job_id="job_2")],
     )
 
     assert should_run_parallel is True
+
+
+def test_kernel_blocks_parallel_worker_batches_for_agents_that_disallow_background_jobs(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    settings.llm_provider = "azure"
+    settings.judge_provider = "azure"
+    kernel = RuntimeKernel(
+        settings,
+        providers=SimpleNamespace(
+            chat=FakeListChatModel(responses=["unused"]),
+            judge=FakeListChatModel(responses=["unused"]),
+        ),
+        stores=None,
+    )
+
+    should_run_parallel = kernel._should_run_task_batch_in_parallel(
+        batch=[
+            {"mode": "parallel", "executor": "planner"},
+            {"mode": "parallel", "executor": "verifier"},
+        ],
+        real_jobs=[SimpleNamespace(job_id="job_1"), SimpleNamespace(job_id="job_2")],
+    )
+
+    assert should_run_parallel is False
 
 
 def test_kernel_serializes_parallel_worker_batches_when_provider_objects_are_ollama(tmp_path: Path) -> None:
@@ -170,3 +202,19 @@ def test_kernel_serializes_parallel_worker_batches_when_provider_objects_are_oll
     )
 
     assert should_run_parallel is False
+
+
+def test_query_loop_builds_skill_context_only_once() -> None:
+    class FakeSkillRuntime:
+        def build_prompt(self, agent):
+            del agent
+            return "Base prompt"
+
+    loop = QueryLoop(settings=None, skill_runtime=FakeSkillRuntime())
+    agent = AgentDefinition(name="general", mode="react", prompt_file="general_agent.md")
+    session = SessionState(tenant_id="tenant", user_id="user", conversation_id="conversation")
+
+    prompt = loop._build_system_prompt(agent, session, skill_context="Use citation hygiene.")
+
+    assert prompt.count("## Skill Context") == 1
+    assert prompt.count("Use citation hygiene.") == 1

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import BaseModel, Field, field_validator
 
 from agentic_chatbot_next.utils.json_utils import extract_json
-from agentic_chatbot_next.router.router import RouterDecision, route_message
+from agentic_chatbot_next.router.router import RouterDecision, build_router_targets, route_message
 
 logger = logging.getLogger(__name__)
-
-_VALID_SUGGESTED_AGENTS = {"coordinator", "data_analyst", ""}
 
 _ROUTER_SYSTEM_PROMPT = """\
 You are a message router for an enterprise document-intelligence assistant.
@@ -33,9 +31,9 @@ Classify the incoming user message as either BASIC or AGENT.
 - Is a simple conversational follow-up that was already answered
 
 ## Also suggest the best starting runtime agent
-- coordinator      - multi-step research, comparisons, background or long-running work, verification-heavy tasks
-- data_analyst     - tabular data analysis (Excel, CSV), statistics, aggregations, pandas operations
-- (empty string)   - general agent is sufficient
+Choose from the runtime agents listed below, or return an empty string when the default top-level
+agent is sufficient:
+{agent_options}
 """
 
 _ROUTER_HUMAN_TEMPLATE = """\
@@ -53,7 +51,7 @@ class LLMRouterOutput(BaseModel):
     reasoning: str = Field(..., description="One-sentence explanation of the routing decision")
     suggested_agent: str = Field(
         default="",
-        description="Best starting runtime agent: 'coordinator' | 'data_analyst' | ''",
+        description="Best starting runtime agent: 'coordinator' | 'data_analyst' | 'rag_worker' | ''",
     )
 
     @field_validator("route")
@@ -67,8 +65,23 @@ class LLMRouterOutput(BaseModel):
     @field_validator("suggested_agent")
     @classmethod
     def _validate_suggested_agent(cls, value: str) -> str:
-        clean = value.strip().lower()
-        return clean if clean in _VALID_SUGGESTED_AGENTS else ""
+        return value.strip().lower()
+
+
+def _agent_options_text(valid_suggested_agents: Iterable[str], descriptions: dict[str, str]) -> str:
+    lines = ["- (empty string) - use the default top-level agent"]
+    for agent_name in valid_suggested_agents:
+        if not agent_name:
+            continue
+        description = descriptions.get(agent_name, "").strip() or "runtime specialist"
+        lines.append(f"- {agent_name} - {description}")
+    return "\n".join(lines)
+
+
+def _sanitize_suggested_agent(value: str, valid_suggested_agents: Iterable[str]) -> str:
+    valid = {str(item).strip().lower() for item in valid_suggested_agents if str(item).strip()}
+    clean = str(value or "").strip().lower()
+    return clean if clean in valid else ""
 
 
 def route_turn(
@@ -79,6 +92,7 @@ def route_turn(
     has_attachments: bool,
     history_summary: str = "",
     force_agent: bool = False,
+    registry: Any | None = None,
 ):
     if bool(getattr(settings, "llm_router_enabled", True)):
         return route_message_hybrid(
@@ -88,11 +102,13 @@ def route_turn(
             history_summary=history_summary,
             explicit_force_agent=force_agent,
             llm_confidence_threshold=float(getattr(settings, "llm_router_confidence_threshold", 0.70)),
+            registry=registry,
         )
     return route_message(
         user_text,
         has_attachments=has_attachments,
         explicit_force_agent=force_agent,
+        registry=registry,
     )
 
 
@@ -107,21 +123,23 @@ def route_message_hybrid(
     history_summary: str = "",
     explicit_force_agent: bool = False,
     llm_confidence_threshold: float = 0.70,
+    registry: Any | None = None,
 ) -> RouterDecision:
+    targets = build_router_targets(registry)
     if explicit_force_agent:
         return RouterDecision(
             route="AGENT",
             confidence=1.0,
             reasons=["explicit_force_agent"],
-            suggested_agent="",
+            suggested_agent=targets.rag_agent if any(token in user_text.lower() for token in ("cite", "source", "document", "architecture", "policy", "contract")) else "",
             router_method="deterministic",
         )
 
     if has_attachments:
         suggested = (
-            "coordinator"
+            targets.coordinator_agent
             if any(token in user_text.lower() for token in ("compare", "difference", "research", "analyze"))
-            else ""
+            else (targets.rag_agent if any(token in user_text.lower() for token in ("cite", "source", "document", "architecture", "policy", "contract")) else "")
         )
         return RouterDecision(
             route="AGENT",
@@ -135,6 +153,7 @@ def route_message_hybrid(
         user_text,
         has_attachments=has_attachments,
         explicit_force_agent=False,
+        registry=registry,
     )
     if deterministic.confidence >= llm_confidence_threshold:
         return RouterDecision(
@@ -152,7 +171,13 @@ def route_message_hybrid(
     )
 
     try:
-        llm_out = _call_llm_router(judge_llm, user_text=user_text, history_summary=history_summary)
+        llm_out = _call_llm_router(
+            judge_llm,
+            user_text=user_text,
+            history_summary=history_summary,
+            valid_suggested_agents=targets.suggested_agents,
+            descriptions=targets.descriptions,
+        )
         return RouterDecision(
             route=llm_out.route,
             confidence=llm_out.confidence,
@@ -176,11 +201,17 @@ def _call_llm_router(
     *,
     user_text: str,
     history_summary: str,
+    valid_suggested_agents: Iterable[str],
+    descriptions: dict[str, str],
 ) -> LLMRouterOutput:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     messages = [
-        SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+        SystemMessage(
+            content=_ROUTER_SYSTEM_PROMPT.format(
+                agent_options=_agent_options_text(valid_suggested_agents, descriptions),
+            )
+        ),
         HumanMessage(
             content=_ROUTER_HUMAN_TEMPLATE.format(
                 history_summary=history_summary or "(no prior context)",
@@ -199,10 +230,10 @@ def _call_llm_router(
 
     response = judge_llm.invoke(messages)
     text = getattr(response, "content", None) or str(response)
-    return _parse_llm_response_text(text)
+    return _parse_llm_response_text(text, valid_suggested_agents)
 
 
-def _parse_llm_response_text(text: str) -> LLMRouterOutput:
+def _parse_llm_response_text(text: str, valid_suggested_agents: Iterable[str]) -> LLMRouterOutput:
     obj = extract_json(text) or {}
     route = str(obj.get("route", "")).strip().upper()
     if route not in {"BASIC", "AGENT"}:
@@ -216,9 +247,7 @@ def _parse_llm_response_text(text: str) -> LLMRouterOutput:
     confidence = float(obj.get("confidence", 0.65))
     confidence = max(0.0, min(1.0, confidence))
 
-    suggested = str(obj.get("suggested_agent", "")).strip().lower()
-    if suggested not in _VALID_SUGGESTED_AGENTS:
-        suggested = ""
+    suggested = _sanitize_suggested_agent(str(obj.get("suggested_agent", "")), valid_suggested_agents)
 
     reasoning = str(obj.get("reasoning", "parsed from text"))
     return LLMRouterOutput(

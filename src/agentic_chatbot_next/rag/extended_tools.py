@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 from langchain_core.tools import tool
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 from agentic_chatbot_next.prompting import load_judge_rewrite_prompt, render_template
 from agentic_chatbot_next.rag.stores import KnowledgeStores
 from agentic_chatbot_next.utils.json_utils import extract_json

@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback } from 'react'
 import { v4 as uuidv4 } from 'uuid'
-import { streamChatCompletion } from '../api/client'
-import type { Message, ProgressEvent } from '../types'
+import { getErrorMessage, isBackendUnavailableError, streamChatCompletion } from '../api/client'
+import type { Message } from '../types'
 
-export function useChat() {
+export function useChat(onBackendUnavailable?: (message: string) => void) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [conversationId] = useState<string>(() => {
@@ -82,11 +82,14 @@ export function useChat() {
             ),
           )
         } else {
-          const errMsg = err instanceof Error ? err.message : 'Unknown error'
+          const errMsg = getErrorMessage(err)
+          if (isBackendUnavailableError(err)) {
+            onBackendUnavailable?.(errMsg)
+          }
           setMessages(prev =>
             prev.map(m =>
               m.id === assistantId
-                ? { ...m, content: `Error: ${errMsg}`, isStreaming: false }
+                ? { ...m, content: errMsg, isStreaming: false }
                 : m,
             ),
           )
@@ -101,7 +104,7 @@ export function useChat() {
         abortRef.current = null
       }
     },
-    [messages, isLoading, conversationId],
+    [messages, isLoading, conversationId, onBackendUnavailable],
   )
 
   const stopGeneration = useCallback(() => {

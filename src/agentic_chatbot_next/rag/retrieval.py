@@ -41,11 +41,13 @@ def vector_search(
     top_k: int,
     tenant_id: str,
     doc_id_filter: Optional[str] = None,
+    collection_id_filter: Optional[str] = None,
 ) -> List[ScoredChunk]:
     return stores.chunk_store.vector_search(
         query,
         top_k=top_k,
         doc_id_filter=doc_id_filter,
+        collection_id_filter=collection_id_filter,
         tenant_id=tenant_id,
     )
 
@@ -57,11 +59,13 @@ def keyword_search(
     top_k: int,
     tenant_id: str,
     doc_id_filter: Optional[str] = None,
+    collection_id_filter: Optional[str] = None,
 ) -> List[ScoredChunk]:
     return stores.chunk_store.keyword_search(
         query,
         top_k=top_k,
         doc_id_filter=doc_id_filter,
+        collection_id_filter=collection_id_filter,
         tenant_id=tenant_id,
     )
 
@@ -72,7 +76,61 @@ def merge_dedupe(chunks: Sequence[ScoredChunk]) -> List[ScoredChunk]:
         key = _doc_key(chunk.doc)
         if key not in by_key or chunk.score > by_key[key].score:
             by_key[key] = chunk
-    return list(by_key.values())
+    return sorted(by_key.values(), key=lambda chunk: chunk.score, reverse=True)
+
+
+def _title_matched_doc_ids(
+    stores: KnowledgeStores,
+    query: str,
+    *,
+    tenant_id: str,
+    preferred_doc_ids: Sequence[str],
+    collection_id_filter: Optional[str],
+    limit: int = 3,
+) -> List[str]:
+    try:
+        matches = stores.doc_store.fuzzy_search_title(
+            query,
+            tenant_id=tenant_id,
+            limit=max(1, limit * 2),
+            collection_id=collection_id_filter or "",
+        )
+    except Exception:
+        return []
+
+    allowed = set(preferred_doc_ids)
+    doc_ids: List[str] = []
+    seen: set[str] = set()
+    for item in matches:
+        doc_id = str(item.get("doc_id") or "")
+        if not doc_id or doc_id in seen:
+            continue
+        if allowed and doc_id not in allowed:
+            continue
+        seen.add(doc_id)
+        doc_ids.append(doc_id)
+        if len(doc_ids) >= limit:
+            break
+    return doc_ids
+
+
+def _boost_title_matches(chunks: Sequence[ScoredChunk], title_matched_doc_ids: Sequence[str]) -> List[ScoredChunk]:
+    if not title_matched_doc_ids:
+        return list(chunks)
+
+    boosts = {
+        doc_id: max(0.05, 0.18 - (index * 0.04))
+        for index, doc_id in enumerate(title_matched_doc_ids)
+    }
+    boosted: List[ScoredChunk] = []
+    for chunk in chunks:
+        doc_id = str((chunk.doc.metadata or {}).get("doc_id") or "")
+        boost = boosts.get(doc_id, 0.0)
+        if boost <= 0.0:
+            boosted.append(chunk)
+            continue
+        boosted.append(ScoredChunk(doc=chunk.doc, score=chunk.score + boost, method=chunk.method))
+    return boosted
 
 
 def retrieve_candidates(
@@ -85,22 +143,57 @@ def retrieve_candidates(
     top_k_vector: int,
     top_k_keyword: int,
     doc_id_filter: Optional[str] = None,
+    collection_id_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     effective_filter = doc_id_filter
+    title_matched_doc_ids: List[str] = []
+    if not effective_filter:
+        title_matched_doc_ids = _title_matched_doc_ids(
+            stores,
+            query,
+            tenant_id=tenant_id,
+            preferred_doc_ids=preferred_doc_ids,
+            collection_id_filter=collection_id_filter,
+        )
+
     vector_hits = vector_search(
         stores,
         query,
         top_k=top_k_vector,
         tenant_id=tenant_id,
         doc_id_filter=effective_filter,
+        collection_id_filter=collection_id_filter if not effective_filter else None,
     )
+    if title_matched_doc_ids:
+        for matched_doc_id in title_matched_doc_ids:
+            vector_hits.extend(
+                vector_search(
+                    stores,
+                    query,
+                    top_k=max(1, min(3, top_k_vector)),
+                    tenant_id=tenant_id,
+                    doc_id_filter=matched_doc_id,
+                )
+            )
     keyword_hits = keyword_search(
         stores,
         query,
         top_k=top_k_keyword,
         tenant_id=tenant_id,
         doc_id_filter=effective_filter,
+        collection_id_filter=collection_id_filter if not effective_filter else None,
     )
+    if title_matched_doc_ids:
+        for matched_doc_id in title_matched_doc_ids:
+            keyword_hits.extend(
+                keyword_search(
+                    stores,
+                    query,
+                    top_k=max(1, min(2, top_k_keyword)),
+                    tenant_id=tenant_id,
+                    doc_id_filter=matched_doc_id,
+                )
+            )
     if not effective_filter and preferred_doc_ids:
         vector_hits = [chunk for chunk in vector_hits if (chunk.doc.metadata or {}).get("doc_id") in preferred_doc_ids]
         keyword_hits = [chunk for chunk in keyword_hits if (chunk.doc.metadata or {}).get("doc_id") in preferred_doc_ids]
@@ -113,6 +206,9 @@ def retrieve_candidates(
             else:
                 boosted_vector.append(chunk)
         vector_hits = boosted_vector
+
+    vector_hits = _boost_title_matches(vector_hits, title_matched_doc_ids)
+    keyword_hits = _boost_title_matches(keyword_hits, title_matched_doc_ids)
 
     merged = merge_dedupe(vector_hits + keyword_hits)
     return {"vector": vector_hits, "keyword": keyword_hits, "merged": merged}
@@ -127,6 +223,79 @@ def _heuristic_relevance(question: str, text: str) -> int:
     if overlap >= 5:
         return 2
     if overlap >= 2:
+        return 1
+    return 0
+
+
+def _title_hint_relevance(question: str, metadata: Dict[str, Any]) -> int:
+    title = str(metadata.get("title") or "")
+    if not title:
+        return 0
+    q_terms = set(re.findall(r"[A-Za-z0-9_]{3,}", question.lower()))
+    t_terms = set(re.findall(r"[A-Za-z0-9_]{3,}", title.lower()))
+    overlap = len(q_terms & t_terms)
+    if overlap >= 2:
+        return 2
+    if overlap >= 1 and q_terms & {"architecture", "contract", "policy", "requirement", "runbook", "playbook", "agreement"}:
+        return 2
+    return 0
+
+
+def _normalize_for_match(value: str) -> str:
+    parts = re.findall(r"[A-Za-z0-9_]+", value.lower())
+    normalized: list[str] = []
+    for part in parts:
+        normalized.extend(piece for piece in part.replace("_", " ").split() if piece)
+    return " ".join(normalized)
+
+
+def _question_echo_penalty(question: str, chunk: Document) -> int:
+    metadata = chunk.metadata or {}
+    title = _normalize_for_match(str(metadata.get("title") or ""))
+    text = _normalize_for_match(chunk.page_content)
+    normalized_question = _normalize_for_match(question)
+    if len(normalized_question) < 24:
+        return 0
+
+    meta_title_terms = (
+        "test queries",
+        "prompt",
+        "prompts",
+        "example query",
+        "example queries",
+        "sample query",
+        "sample queries",
+    )
+    if not any(term in title for term in meta_title_terms):
+        return 0
+    if normalized_question in text:
+        return 2
+    return 0
+
+
+def _meta_catalog_penalty(question: str, metadata: Dict[str, Any]) -> int:
+    title = _normalize_for_match(str(metadata.get("title") or ""))
+    if not title:
+        return 0
+
+    meta_title_terms = (
+        "test queries",
+        "prompt",
+        "prompts",
+        "example",
+        "examples",
+        "sample query",
+        "sample queries",
+    )
+    if not any(term in title for term in meta_title_terms):
+        return 0
+
+    q_terms = set(re.findall(r"[A-Za-z0-9_]{3,}", question.lower()))
+    t_terms = set(re.findall(r"[A-Za-z0-9_]{3,}", title.lower()))
+    overlap = len(q_terms & t_terms)
+    if overlap == 0:
+        return 2
+    if overlap == 1:
         return 1
     return 0
 
@@ -177,12 +346,40 @@ def grade_chunks(
                     chunk_id,
                     (_heuristic_relevance(question, chunk.page_content), "heuristic"),
                 )
+                title_relevance = _title_hint_relevance(question, chunk.metadata or {})
+                if title_relevance > relevance:
+                    relevance = title_relevance
+                    reason = "title_hint"
+                echo_penalty = _question_echo_penalty(question, chunk)
+                meta_penalty = _meta_catalog_penalty(question, chunk.metadata or {})
+                if echo_penalty or meta_penalty:
+                    if echo_penalty >= meta_penalty:
+                        relevance = max(0, relevance - echo_penalty)
+                        reason = "question_echo"
+                    else:
+                        relevance = max(0, relevance - meta_penalty)
+                        reason = "meta_catalog"
                 graded.append(GradedChunk(doc=chunk, relevance=relevance, reason=reason))
             return graded
     except Exception:
         pass
 
-    return [
-        GradedChunk(doc=chunk, relevance=_heuristic_relevance(question, chunk.page_content), reason="heuristic")
-        for chunk in selected
-    ]
+    graded: List[GradedChunk] = []
+    for chunk in selected:
+        relevance = max(
+            _heuristic_relevance(question, chunk.page_content),
+            _title_hint_relevance(question, chunk.metadata or {}),
+        )
+        echo_penalty = _question_echo_penalty(question, chunk)
+        meta_penalty = _meta_catalog_penalty(question, chunk.metadata or {})
+        if echo_penalty or meta_penalty:
+            if echo_penalty >= meta_penalty:
+                relevance = max(0, relevance - echo_penalty)
+                reason = "question_echo"
+            else:
+                relevance = max(0, relevance - meta_penalty)
+                reason = "meta_catalog"
+        else:
+            reason = "heuristic"
+        graded.append(GradedChunk(doc=chunk, relevance=relevance, reason=reason))
+    return graded

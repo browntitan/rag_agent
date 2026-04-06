@@ -24,6 +24,7 @@ The following live orchestration is plain Python:
 - coordinator planning/batching/finalization/verification
 - worker jobs and mailbox continuation
 - notification drain
+- heuristic memory extraction
 
 That logic lives in:
 
@@ -40,5 +41,8 @@ These modes are currently direct model calls, not LangGraph flows:
 - `finalizer`
 - `verifier`
 
-The `rag_worker` uses the next-owned RAG retrieval/synthesis path rather than a top-level
-LangGraph graph.
+The `rag_worker` uses the next-owned `run_rag_contract()` retrieval/synthesis path rather
+than a top-level LangGraph graph.
+
+The `memory_maintainer` path is not a model flow at all in the live runtime; it is local
+heuristic extraction over recent messages.

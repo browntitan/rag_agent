@@ -167,19 +167,38 @@ def _check_ollama_models(providers: Dict[str, str]) -> List[PreflightCheck]:
 
     checks: List[PreflightCheck] = []
     required_model_map = {
-        "chat_provider": os.getenv("OLLAMA_CHAT_MODEL", "qwen3:8b"),
-        "judge_provider": os.getenv("OLLAMA_JUDGE_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen3:8b")),
+        "chat_provider": os.getenv("OLLAMA_CHAT_MODEL", "qwen3.5:9b"),
+        "judge_provider": os.getenv("OLLAMA_JUDGE_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen3.5:9b")),
         "embeddings_provider": os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
     }
     for role_name, provider in providers.items():
         if provider != "ollama":
             continue
         model_name = required_model_map[role_name]
+        model_available = _ollama_model_present(model_name, models)
         checks.append(
             PreflightCheck(
                 name=f"{role_name}_model",
-                ok=model_name in models,
-                detail=f"{model_name} {'available' if model_name in models else 'missing'} at {base_url}",
+                ok=model_available,
+                detail=f"{model_name} {'available' if model_available else 'missing'} at {base_url}",
             )
         )
     return checks
+
+
+def _ollama_model_present(model_name: str, available_models: set[str]) -> bool:
+    return any(candidate in available_models for candidate in _ollama_model_aliases(model_name))
+
+
+def _ollama_model_aliases(model_name: str) -> set[str]:
+    normalized = model_name.strip()
+    if not normalized:
+        return set()
+    aliases = {normalized}
+    if ":" in normalized:
+        base_name, tag = normalized.rsplit(":", 1)
+        if tag == "latest":
+            aliases.add(base_name)
+    else:
+        aliases.add(f"{normalized}:latest")
+    return aliases

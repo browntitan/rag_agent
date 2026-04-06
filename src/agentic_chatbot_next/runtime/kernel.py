@@ -20,6 +20,7 @@ from agentic_chatbot_next.observability.callbacks import (
     get_langchain_callbacks,
 )
 from agentic_chatbot_next.observability.events import RuntimeEvent
+from agentic_chatbot_next.providers.factory import AgentProviderResolver
 from agentic_chatbot_next.runtime.context import RuntimePaths
 from agentic_chatbot_next.runtime.event_sink import NullEventSink, RuntimeEventSink
 from agentic_chatbot_next.runtime.job_manager import RuntimeJobManager
@@ -98,6 +99,7 @@ class RuntimeKernel:
             stores=stores,
             skill_runtime=self.skill_runtime,
         )
+        self.provider_resolver = AgentProviderResolver(settings, providers)
         self.tool_policy = ToolPolicyService()
         self.file_memory_store = FileMemoryStore(self.paths)
         self.memory_extractor = MemoryExtractor(self.file_memory_store)
@@ -386,9 +388,10 @@ class RuntimeKernel:
         if agent.mode == "coordinator":
             return self._run_coordinator(agent, session_state, user_text=user_text, callbacks=callbacks)
 
+        agent_providers = self.resolve_providers_for_agent(agent.name)
         tool_context = ToolContext(
             settings=self.settings,
-            providers=self.providers,
+            providers=agent_providers,
             stores=self.stores,
             session=session_state,
             paths=self.paths,
@@ -410,6 +413,7 @@ class RuntimeKernel:
             agent,
             session_state,
             user_text=user_text,
+            providers=agent_providers,
             tool_context=tool_context,
             tools=tools,
             task_payload=task_payload,
@@ -419,6 +423,9 @@ class RuntimeKernel:
             messages=list(loop_result.messages or session_state.messages),
             metadata=dict(loop_result.metadata),
         )
+
+    def resolve_providers_for_agent(self, agent_name: str) -> Any | None:
+        return self.provider_resolver.for_agent(agent_name)
 
     def spawn_worker_from_tool(
         self,
@@ -435,6 +442,12 @@ class RuntimeKernel:
         if clean_agent not in allowed_agents:
             return {"error": f"Agent '{clean_agent}' is not allowed.", "allowed_agents": sorted(allowed_agents)}
         worker_agent = self._resolve_agent(clean_agent)
+        if run_in_background and not worker_agent.allow_background_jobs:
+            return {
+                "error": f"Agent '{clean_agent}' does not allow background jobs.",
+                "background": False,
+                "agent_name": clean_agent,
+            }
         scoped_state = self._build_scoped_worker_state(tool_context.session, agent_name=clean_agent)
         worker_request = WorkerExecutionRequest(
             agent_name=clean_agent,
@@ -806,6 +819,15 @@ class RuntimeKernel:
             return False
         if not all(str(task.get("mode", "sequential")) == "parallel" for task in batch):
             return False
+        for task in batch:
+            executor = str(task.get("executor") or "").strip()
+            if not executor:
+                return False
+            try:
+                if not self._resolve_agent(executor).allow_background_jobs:
+                    return False
+            except ValueError:
+                return False
         # Local Ollama workers contend for the same host model server and can stall
         # long coordinator batches; prefer deterministic serial execution there.
         if self._uses_local_ollama_workers():
@@ -1015,8 +1037,22 @@ class RuntimeKernel:
     def _run_post_turn_memory_maintenance(self, session_state: SessionState, *, latest_text: str) -> None:
         if not latest_text.strip():
             return
-        recent_messages = session_state.messages[-6:]
-        scopes = [MemoryScope.conversation.value, MemoryScope.user.value]
+        entries = self.memory_extractor.extract_entries(latest_text)
+        if not entries:
+            self._emit(
+                "memory_extraction_skipped",
+                session_state.session_id,
+                agent_name="memory_maintainer",
+                payload={
+                    "conversation_id": session_state.conversation_id,
+                    "reason": "no_structured_entries",
+                    "mode": "heuristic",
+                },
+            )
+            return
+        scopes = [MemoryScope.conversation.value]
+        if self.memory_extractor.has_explicit_memory_intent(latest_text):
+            scopes.append(MemoryScope.user.value)
         self._emit(
             "memory_extraction_started",
             session_state.session_id,
@@ -1024,14 +1060,11 @@ class RuntimeKernel:
             payload={
                 "conversation_id": session_state.conversation_id,
                 "scopes": scopes,
+                "mode": "heuristic",
             },
         )
         try:
-            saved = self.memory_extractor.apply_from_messages(
-                session_state,
-                recent_messages,
-                scopes=scopes,
-            )
+            saved = self.memory_extractor.apply_from_text(session_state, latest_text, scopes=scopes)
         except Exception as exc:
             self._emit(
                 "memory_extraction_failed",
@@ -1041,6 +1074,7 @@ class RuntimeKernel:
                     "conversation_id": session_state.conversation_id,
                     "error": str(exc)[:1000],
                     "scopes": scopes,
+                    "mode": "heuristic",
                 },
             )
             return
@@ -1053,6 +1087,7 @@ class RuntimeKernel:
                     "conversation_id": session_state.conversation_id,
                     "saved_entries": saved,
                     "scopes": scopes,
+                    "mode": "heuristic",
                 },
             )
 

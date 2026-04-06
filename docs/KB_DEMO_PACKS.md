@@ -25,9 +25,12 @@ Do not assume those files are already indexed in PostgreSQL until you explicitly
 ## Common commands
 
 ```bash
-python run.py sync-kb
-python run.py init-kb
+python run.py sync-kb --collection-id default
+python run.py reindex-document <path>
 ```
+
+`init-kb` still exists as a deprecated compatibility command, but the live operator path is
+`sync-kb`.
 
 Automatic startup seeding is still supported:
 

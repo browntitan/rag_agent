@@ -7,8 +7,8 @@ from typing import Any, List, Optional
 
 from langchain_core.tools import tool
 
-from agentic_chatbot.config import Settings
-from agentic_chatbot.sandbox.exceptions import SandboxUnavailableError
+from agentic_chatbot_next.config import Settings
+from agentic_chatbot_next.sandbox.exceptions import SandboxUnavailableError
 from agentic_chatbot_next.rag.stores import KnowledgeStores
 from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
 from agentic_chatbot_next.tools.calculator import calculator

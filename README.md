@@ -8,18 +8,21 @@ session kernel.
 
 The live API and CLI now execute through `src/agentic_chatbot_next/`.
 
+Migration note:
+
+- in-process callers should no longer import `agentic_chatbot.runtime.*` or
+  `agentic_chatbot.agents.orchestrator.ChatbotApp`
+- `agentic_chatbot_next.app.service.RuntimeService` is the supported runtime-facing surface
+
 Current top-level turn flow:
 
-- transport and bootstrapping: `src/agentic_chatbot/api/main.py`, `src/agentic_chatbot/cli.py`
+- transport and bootstrapping: `src/agentic_chatbot_next/api/main.py`, `src/agentic_chatbot_next/cli.py`
 - live runtime service: `src/agentic_chatbot_next/app/service.py`
 - route selection: `src/agentic_chatbot_next/router/`
 - session kernel: `src/agentic_chatbot_next/runtime/kernel.py`
-- executor loop: `src/agentic_chatbot_next/runtime/query_loop.py`
+- mode dispatch and shared prompt/memory/skill injection: `src/agentic_chatbot_next/runtime/query_loop.py`
+- react executor and plan-execute fallback: `src/agentic_chatbot_next/general_agent.py`
 - late-bound agents from markdown frontmatter: `data/agents/*.md`
-
-`src/agentic_chatbot/agents/orchestrator.py` is now a deprecated compatibility shim over
-`agentic_chatbot_next.app.service.RuntimeService`. The old
-`src/agentic_chatbot/runtime/*` package is reference-only.
 
 ## Runtime model
 
@@ -50,6 +53,12 @@ Runtime persistence layout:
 
 Memory in the live next runtime is file-backed. The old PostgreSQL memory table is not part of
 the live memory path anymore.
+
+## Runbooks
+
+- local stack: `docs/LOCAL_DOCKER_STACK.md`
+- test prompts: `docs/TEST_QUERIES.md`
+- agent-harness audit: `docs/AGENT_HARNESS_AUDIT.md`
 
 ## Architecture
 
@@ -88,41 +97,52 @@ flowchart TD
 `.env.example` is geared toward a local/dev setup. For Azure, NVIDIA, or mixed-provider
 configurations, see `docs/PROVIDERS.md`.
 
-### Option 1: Host Python app, Docker PostgreSQL, Ollama on host
+The OpenAI-compatible API still uses `GATEWAY_MODEL_ID=enterprise-agent` as its public model
+ID. Per-agent runtime chat/judge overrides are configured separately through
+`AGENT_<AGENT_NAME>_CHAT_MODEL` and `AGENT_<AGENT_NAME>_JUDGE_MODEL`.
 
-Prerequisites:
+### Primary local dev path
 
-- Python 3.12+
-- Docker
-- Ollama installed locally
+Use `docs/LOCAL_DOCKER_STACK.md` as the canonical runbook for:
+
+- clean reset
+- dependency startup
+- backend startup
+- frontend startup
+- smoke prompts
+
+In short:
 
 ```bash
+cp .env.example .env
 docker compose up -d rag-postgres
-ollama pull qwen3:8b
-ollama pull nomic-embed-text
+docker compose --profile ollama up -d ollama
+docker compose exec ollama ollama pull gpt-oss:20b
+docker compose exec ollama ollama pull nomic-embed-text:latest
 
 python -m pip install -r requirements.txt
-cp .env.example .env
-
-python run.py doctor
-python run.py migrate
-python run.py index-skills
-python run.py sync-kb
-python run.py chat
+python run.py doctor --strict
+python run.py serve-api --host 0.0.0.0 --port 8000
 ```
 
-### Option 2: Full Docker Compose stack
+Then start the frontend from `frontend/` with:
+
+```bash
+npm install
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+### Secondary deployment path: Dockerized API service
+
+This is supported, but it is not the default developer workflow for this repo.
 
 ```bash
 cp .env.example .env
-docker compose --profile ollama up -d --build
-docker compose exec ollama ollama pull qwen3:8b
-docker compose exec ollama ollama pull nomic-embed-text
-
-docker compose exec app python run.py doctor
-docker compose exec app python run.py index-skills
-docker compose exec app python run.py sync-kb
-docker compose exec app python run.py ask -q "Summarize the indexed MSA."
+docker compose up -d rag-postgres
+docker compose --profile ollama up -d ollama
+docker compose exec ollama ollama pull gpt-oss:20b
+docker compose exec ollama ollama pull nomic-embed-text:latest
+docker compose up -d app
 ```
 
 ## Start testing
@@ -132,12 +152,12 @@ docker compose exec app python run.py ask -q "Summarize the indexed MSA."
 ```bash
 python run.py ask -q "Hello there"
 python run.py ask -q "Compare the services agreement and cite the differences." --force-agent
-python run.py chat
 ```
 
 Useful commands:
 
-- `python run.py serve-api`
+- `python run.py chat`
+- `python run.py serve-api --host 0.0.0.0 --port 8000`
 - `python run.py sync-kb`
 - `python run.py reindex-document <path>`
 - `python run.py delete-document <doc_id>`
@@ -148,18 +168,17 @@ Useful commands:
 
 ### API
 
-Start the gateway:
-
-```bash
-python run.py serve-api --host 0.0.0.0 --port 8000
-```
-
-Smoke tests:
+Health and model checks:
 
 ```bash
 curl http://127.0.0.1:8000/health/ready
 curl http://127.0.0.1:8000/v1/models
 ```
+
+`/health/ready` is KB-aware. It returns `503` with `reason`, `missing_sources`, and a
+`suggested_fix` when the configured KB/docs corpus is not indexed for the active collection.
+
+Chat completion smoke:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/chat/completions \
@@ -174,6 +193,8 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
+Path-based ingest with proactive workspace preparation:
+
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/ingest/documents \
   -H "Content-Type: application/json" \
@@ -184,102 +205,34 @@ curl -X POST http://127.0.0.1:8000/v1/ingest/documents \
   }'
 ```
 
-### Demo paths
-
-CLI scenarios:
+Multipart upload endpoint used by the frontend:
 
 ```bash
-python run.py demo --list-scenarios
-python run.py demo --scenario <name> --verify
+curl -X POST http://127.0.0.1:8000/v1/upload \
+  -H "X-Conversation-ID: readme-demo" \
+  -F "files=@new_demo_notebook/demo_data/regional_spend.csv"
 ```
 
-Notebook showcase:
+`/v1/ingest/documents` is the guaranteed pre-chat workspace-seeding path. `/v1/upload`
+is the frontend multipart upload endpoint; it ingests files into the KB, but workspace
+copy behavior is currently best-effort rather than the canonical seeding path.
 
-```bash
-python -m pip install -r new_demo_notebook/requirements.txt
-jupyter notebook new_demo_notebook/agentic_system_showcase.ipynb
-```
+### Demo and acceptance
 
-The notebook starts the live API server, calls `/v1/chat/completions` and
-`/v1/ingest/documents`, then renders traces from `data/runtime`. It now fails
-the run immediately when any scenario misses its expected orchestration behavior.
+- optional notebook showcase and acceptance harness: `new_demo_notebook/README.md`
+- local smoke prompts: `docs/TEST_QUERIES.md`
+- local operator runbook: `docs/LOCAL_DOCKER_STACK.md`
 
-Manual acceptance target:
-
-```bash
-RUN_NEXT_RUNTIME_ACCEPTANCE=1 pytest -m acceptance tests/test_next_acceptance_harness.py
-```
-
-Notebook execution smoke:
-
-```bash
-RUN_NEXT_RUNTIME_NOTEBOOK_ACCEPTANCE=1 pytest -m acceptance tests/test_next_acceptance_harness.py -k notebook
-```
-
-### Verified Ollama acceptance profile
-
-Use this exact shell profile for the long-timeout local acceptance gate:
-
-```bash
-export PYTHONPATH=src
-export LLM_PROVIDER=ollama
-export EMBEDDINGS_PROVIDER=ollama
-export JUDGE_PROVIDER=ollama
-export OLLAMA_BASE_URL=http://localhost:11434
-export OLLAMA_CHAT_MODEL=qwen3.5:9b
-export OLLAMA_JUDGE_MODEL=qwen3.5:9b
-export OLLAMA_EMBED_MODEL=nomic-embed-text:latest
-export EMBEDDING_DIM=768
-export DEFAULT_COLLECTION_ID=default
-export SANDBOX_DOCKER_IMAGE=agentic-chatbot-sandbox:py312
-
-export NEXT_RUNTIME_GATEWAY_TIMEOUT_SECONDS=900
-export NEXT_RUNTIME_JOB_WAIT_SECONDS=300
-export NEXT_RUNTIME_SERVER_READY_TIMEOUT_SECONDS=300
-export NEXT_RUNTIME_NOTEBOOK_EXECUTION_TIMEOUT_SECONDS=5400
-export SANDBOX_TIMEOUT_SECONDS=300
-```
-
-Run the live gate in this order:
-
-```bash
-python -m pip install -r new_demo_notebook/requirements.txt
-ollama list
-docker info
-python run.py doctor --strict
-python run.py migrate
-python run.py sync-kb --collection-id default
-python run.py index-skills
-RUN_NEXT_RUNTIME_ACCEPTANCE=1 pytest -m acceptance tests/test_next_acceptance_harness.py
-RUN_NEXT_RUNTIME_NOTEBOOK_ACCEPTANCE=1 pytest -m acceptance tests/test_next_acceptance_harness.py -k notebook
-```
-
-The notebook smoke executes `new_demo_notebook/agentic_system_showcase.ipynb` through
-`nbconvert`, starts the live FastAPI server from this repository, and talks to the same
-`/v1/chat/completions` and `/v1/ingest/documents` routes used by the manual API flow.
-
-Acceptance evidence is preserved in:
-
-- `new_demo_notebook/.artifacts/server.log`
-- `new_demo_notebook/.artifacts/executed/agentic_system_showcase.executed.ipynb`
-- `data/runtime/sessions/<filesystem_key(session_id)>/`
-- `data/runtime/jobs/<filesystem_key(job_id)>/`
-- `data/workspaces/<filesystem_key(session_id)>/`
-- `data/memory/tenants/<tenant>/users/<user>/...`
-
-Release criteria for the rearchitected runtime:
-
-- helper and unit suites green
-- live scenario-manifest acceptance green
-- live notebook-execution smoke green
+`new_demo_notebook/` is supported as acceptance and demo infrastructure for the live
+next-runtime system. It is not part of the core runtime package surface.
 
 ## In-process Python API
 
 Prefer `RuntimeService` directly:
 
 ```python
-from agentic_chatbot.config import load_settings
-from agentic_chatbot.providers import build_providers
+from agentic_chatbot_next.config import load_settings
+from agentic_chatbot_next.providers import build_providers
 from agentic_chatbot_next.app.service import RuntimeService
 
 settings = load_settings()
@@ -296,15 +249,18 @@ Runnable example: `examples/python/inprocess_runtime.py`
 
 ```env
 DEFAULT_COLLECTION_ID=default
+GATEWAY_MODEL_ID=enterprise-agent
 SKILL_PACKS_DIR=./data/skill_packs
-SEED_DEMO_KB_ON_STARTUP=false
+SEED_DEMO_KB_ON_STARTUP=true
 SKILL_SEARCH_TOP_K=4
 SKILL_CONTEXT_MAX_CHARS=4000
 LLM_ROUTER_ENABLED=true
 ENABLE_COORDINATOR_MODE=false
 RUNTIME_EVENTS_ENABLED=true
 WORKSPACE_DIR=./data/workspaces
-MEMORY_DIR=./data/memory
+RUNTIME_DIR=./data/runtime
+AGENT_GENERAL_CHAT_MODEL=gpt-oss:20b
+AGENT_GENERAL_JUDGE_MODEL=gpt-oss:20b
 ```
 
 `AGENT_RUNTIME_MODE` and `AGENT_DEFINITIONS_JSON` are deprecated compatibility
@@ -312,7 +268,8 @@ inputs. The live runtime ignores them.
 
 ## Troubleshooting
 
-- run `python run.py doctor` first when provider or database setup looks wrong
+- run `python run.py doctor --strict` first when provider or database setup looks wrong
+- use `docs/LOCAL_DOCKER_STACK.md` for clean reset and restart steps
 - inspect `data/runtime/sessions/<fs_session_id>/events.jsonl` for routing and worker traces
 - inspect `data/runtime/jobs/<fs_job_id>/` for worker outputs and mailbox state
 - inspect `data/workspaces/<fs_session_id>/` when debugging data-analyst file access
@@ -331,3 +288,4 @@ inputs. The live runtime ignores them.
 - `docs/RAG_AGENT_DESIGN.md`
 - `docs/RAG_TOOL_CONTRACT.md`
 - `docs/NEXT_RUNTIME_FOUNDATION.md`
+- `new_demo_notebook/README.md`

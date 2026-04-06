@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agentic_chatbot.db.skill_store import SkillChunkMatch
-from agentic_chatbot.rag.skill_index import load_skill_pack_from_file
-from agentic_chatbot.tools.skills_search_tool import make_skills_search_tool
+from agentic_chatbot_next.persistence.postgres.skills import SkillChunkMatch
+from agentic_chatbot_next.skills.pack_loader import load_skill_pack_from_file
+from agentic_chatbot_next.tools.skills_search_tool import make_skills_search_tool
 
 
 def test_load_skill_pack_from_file_parses_metadata_and_chunks(tmp_path: Path):

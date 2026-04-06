@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from agentic_chatbot import cli
-from agentic_chatbot.db import vector_schema
+import agentic_chatbot_next.cli as cli
+
+from agentic_chatbot_next.persistence.postgres import vector_schema
 from agentic_chatbot_next import rag as next_rag_module
 
 
@@ -72,13 +73,18 @@ def test_sync_kb_uses_store_context_without_full_runtime(tmp_path: Path, monkeyp
     kb_dir.mkdir()
     doc_path = kb_dir / "sample.md"
     doc_path.write_text("# Sample\n", encoding="utf-8")
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    extra_path = docs_dir / "ARCHITECTURE.md"
+    extra_path.write_text("# Architecture\n", encoding="utf-8")
 
     settings = SimpleNamespace(
         default_tenant_id="tenant-123",
         default_collection_id="default",
         kb_dir=kb_dir,
+        kb_extra_dirs=(docs_dir,),
     )
-    stores = SimpleNamespace(doc_store=object())
+    stores = SimpleNamespace(doc_store=SimpleNamespace(list_documents=lambda **kwargs: []))
 
     monkeypatch.setattr(cli, "_make_app_or_exit", lambda dotenv=None: (_ for _ in ()).throw(AssertionError("unexpected")))
     monkeypatch.setattr(
@@ -104,7 +110,7 @@ def test_sync_kb_uses_store_context_without_full_runtime(tmp_path: Path, monkeyp
     assert captured == {
         "settings": settings,
         "stores": stores,
-        "paths": [str(doc_path)],
+        "paths": [str(doc_path), str(extra_path)],
         "source_type": "kb",
         "tenant_id": "tenant-123",
         "collection_id": "default",
@@ -118,15 +124,19 @@ def _doctor_settings():
         embeddings_provider="ollama",
         embedding_dim=768,
         pg_dsn="postgresql://user:pass@localhost:5432/ragdb",
+        kb_dir=Path("/tmp/data/kb"),
+        kb_extra_dirs=(Path("/tmp/docs"),),
+        default_tenant_id="tenant-123",
+        default_collection_id="default",
         http2_enabled=True,
         ssl_verify=True,
         ssl_cert_file=None,
         tiktoken_enabled=False,
         tiktoken_cache_dir=None,
         ollama_base_url="http://ollama:11434",
-        ollama_chat_model="qwen3:8b",
-        ollama_judge_model="qwen3:8b",
-        ollama_embed_model="nomic-embed-text",
+        ollama_chat_model="gpt-oss:20b",
+        ollama_judge_model="gpt-oss:20b",
+        ollama_embed_model="nomic-embed-text:latest",
     )
 
 
@@ -139,7 +149,7 @@ def test_doctor_fails_when_selected_ollama_model_is_missing(monkeypatch):
         "urlopen",
         lambda req, timeout=0: _FakeHTTPResponse(
             status_code=200,
-            payload={"models": [{"name": "qwen3:8b"}]},
+            payload={"models": [{"name": "gpt-oss:20b"}]},
         ),
     )
 
@@ -158,7 +168,27 @@ def test_doctor_passes_when_selected_ollama_models_exist(monkeypatch):
         "urlopen",
         lambda req, timeout=0: _FakeHTTPResponse(
             status_code=200,
-            payload={"models": [{"name": "qwen3:8b"}, {"name": "nomic-embed-text"}]},
+            payload={"models": [{"name": "gpt-oss:20b"}, {"name": "nomic-embed-text:latest"}]},
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["doctor", "--skip-db"])
+
+    assert result.exit_code == 0
+    assert "Doctor checks passed." in result.output
+    assert "nomic-embed-text" in result.output
+
+
+def test_doctor_passes_when_selected_ollama_models_use_latest_alias(monkeypatch):
+    monkeypatch.setattr(cli, "load_settings", lambda dotenv=None: _doctor_settings())
+    monkeypatch.setattr(cli, "validate_provider_dependencies", lambda settings: [])
+    monkeypatch.setattr(cli, "validate_provider_configuration", lambda settings: [])
+    monkeypatch.setattr(
+        cli,
+        "urlopen",
+        lambda req, timeout=0: _FakeHTTPResponse(
+            status_code=200,
+            payload={"models": [{"name": "gpt-oss:20b"}, {"name": "nomic-embed-text"}]},
         ),
     )
 
@@ -170,10 +200,17 @@ def test_doctor_passes_when_selected_ollama_models_exist(monkeypatch):
 
 
 class _FakeDbCursor:
-    def __init__(self, dimensions: dict[str, int | None], executed: list[tuple[str, object]] | None = None):
+    def __init__(
+        self,
+        dimensions: dict[str, int | None],
+        executed: list[tuple[str, object]] | None = None,
+        source_paths: list[str] | None = None,
+    ):
         self.dimensions = dimensions
         self.executed = executed if executed is not None else []
         self.table_name: str | None = None
+        self._last_query: str = ""
+        self.source_paths = list(source_paths or [])
 
     def __enter__(self):
         return self
@@ -183,6 +220,7 @@ class _FakeDbCursor:
 
     def execute(self, query, params=None):
         self.executed.append((query, params))
+        self._last_query = str(query)
         if params:
             self.table_name = params[0]
 
@@ -194,11 +232,22 @@ class _FakeDbCursor:
             return None
         return (f"vector({dim})",)
 
+    def fetchall(self):
+        if "SELECT source_path" in self._last_query:
+            return [(path, Path(path).name) for path in self.source_paths]
+        return []
+
 
 class _FakeDbConnection:
-    def __init__(self, dimensions: dict[str, int | None], executed: list[tuple[str, object]] | None = None):
+    def __init__(
+        self,
+        dimensions: dict[str, int | None],
+        executed: list[tuple[str, object]] | None = None,
+        source_paths: list[str] | None = None,
+    ):
         self.dimensions = dimensions
         self.executed = executed if executed is not None else []
+        self.source_paths = list(source_paths or [])
 
     def __enter__(self):
         return self
@@ -207,7 +256,7 @@ class _FakeDbConnection:
         return False
 
     def cursor(self):
-        return _FakeDbCursor(self.dimensions, self.executed)
+        return _FakeDbCursor(self.dimensions, self.executed, self.source_paths)
 
     def commit(self):
         return None
@@ -222,7 +271,7 @@ def test_doctor_fails_when_skill_chunks_dimension_is_misaligned(monkeypatch):
         "urlopen",
         lambda req, timeout=0: _FakeHTTPResponse(
             status_code=200,
-            payload={"models": [{"name": "qwen3:8b"}, {"name": "nomic-embed-text"}]},
+            payload={"models": [{"name": "gpt-oss:20b"}, {"name": "nomic-embed-text:latest"}]},
         ),
     )
     monkeypatch.setitem(
@@ -241,6 +290,41 @@ def test_doctor_fails_when_skill_chunks_dimension_is_misaligned(monkeypatch):
     assert "migrate-embedding-dim --yes" in result.output
 
 
+def test_doctor_warns_when_configured_kb_sources_are_not_indexed(monkeypatch):
+    settings = _doctor_settings()
+    monkeypatch.setattr(cli, "load_settings", lambda dotenv=None: settings)
+    monkeypatch.setattr(cli, "validate_provider_dependencies", lambda settings: [])
+    monkeypatch.setattr(cli, "validate_provider_configuration", lambda settings: [])
+    monkeypatch.setattr(
+        "agentic_chatbot_next.rag.ingest.iter_kb_source_paths",
+        lambda settings: [Path("/tmp/data/kb/a.md"), Path("/tmp/docs/ARCHITECTURE.md")],
+    )
+    monkeypatch.setattr(
+        cli,
+        "urlopen",
+        lambda req, timeout=0: _FakeHTTPResponse(
+            status_code=200,
+            payload={"models": [{"name": "gpt-oss:20b"}, {"name": "nomic-embed-text:latest"}]},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg2",
+        SimpleNamespace(
+            connect=lambda **kwargs: _FakeDbConnection(
+                {"chunks": 768, "skill_chunks": 768},
+                source_paths=["/tmp/data/kb/a.md"],
+            )
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "KB corpus coverage" in result.output
+    assert "ARCHITECTURE.md" in result.output
+
+
 def test_migrate_embedding_dim_realigns_chunks_and_skill_chunks(monkeypatch):
     settings = SimpleNamespace(
         embedding_dim=768,
@@ -248,7 +332,7 @@ def test_migrate_embedding_dim_realigns_chunks_and_skill_chunks(monkeypatch):
     )
     monkeypatch.setattr(cli, "load_settings", lambda dotenv=None: settings)
 
-    import agentic_chatbot.db.connection as db_connection
+    import agentic_chatbot_next.persistence.postgres.connection as db_connection
 
     apply_calls: list[object] = []
     monkeypatch.setattr(db_connection, "apply_schema", lambda effective_settings: apply_calls.append(effective_settings))

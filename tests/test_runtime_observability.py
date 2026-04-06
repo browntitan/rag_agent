@@ -6,7 +6,6 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
-from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot_next.app.service import AppContext, RuntimeService
 from agentic_chatbot_next.observability.callbacks import RuntimeTraceCallbackHandler
 from agentic_chatbot_next.runtime.context import RuntimePaths
@@ -15,6 +14,7 @@ from agentic_chatbot_next.contracts.messages import SessionState
 from agentic_chatbot_next.runtime.kernel import RuntimeKernel
 from agentic_chatbot_next.runtime.query_loop import QueryLoop
 from agentic_chatbot_next.runtime.transcript_store import RuntimeTranscriptStore
+from agentic_chatbot_next.session import ChatSession
 
 
 def _runtime_settings(tmp_path: Path) -> SimpleNamespace:
@@ -407,8 +407,9 @@ def test_ingest_and_summarize_uploads_uses_langchain_callbacks_without_name_erro
     upload_path = tmp_path / "upload.txt"
     upload_path.write_text("uploaded content")
 
-    def fake_rag(*, session, query, conversation_context, preferred_doc_ids, callbacks):
+    def fake_rag(*, session, query, conversation_context, preferred_doc_ids, providers, callbacks):
         assert preferred_doc_ids == ["doc-upload-1"]
+        assert providers is not None
         assert isinstance(callbacks, list)
         return {
             "answer": "Upload summary",
@@ -425,3 +426,154 @@ def test_ingest_and_summarize_uploads_uses_langchain_callbacks_without_name_erro
     assert doc_ids == ["doc-upload-1"]
     assert "Upload summary" in rendered
     assert session.uploaded_doc_ids == ["doc-upload-1"]
+
+
+def test_ingest_and_summarize_uploads_uses_rag_worker_provider_override(tmp_path: Path, monkeypatch):
+    settings = _runtime_settings(tmp_path)
+    providers = SimpleNamespace(chat=object(), judge=object(), embeddings=object())
+    stores = SimpleNamespace()
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.load_basic_chat_skills", lambda settings: "Be concise.")
+    monkeypatch.setattr("agentic_chatbot_next.app.service.ensure_kb_indexed", lambda *args, **kwargs: None)
+
+    class _NoopSkillIndexSync:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def sync(self, tenant_id: str) -> None:
+            return None
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.SkillIndexSync", _NoopSkillIndexSync)
+    monkeypatch.setattr(
+        "agentic_chatbot_next.app.service.ingest_paths",
+        lambda *args, **kwargs: ["doc-upload-1"],
+    )
+
+    app = RuntimeService(AppContext(settings=settings, providers=providers, stores=stores))
+    session = ChatSession(tenant_id="tenant", user_id="user", conversation_id="upload-conv")
+    upload_path = tmp_path / "upload.txt"
+    upload_path.write_text("uploaded content")
+    rag_override = SimpleNamespace(chat=object(), judge=object(), embeddings=providers.embeddings)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app.kernel,
+        "resolve_providers_for_agent",
+        lambda agent_name: rag_override if agent_name == "rag_worker" else providers,
+    )
+
+    def fake_rag(*, session, query, conversation_context, preferred_doc_ids, providers, callbacks):
+        del session, query, conversation_context, preferred_doc_ids, callbacks
+        captured["providers"] = providers
+        return {
+            "answer": "Upload summary",
+            "citations": [],
+            "used_citation_ids": [],
+            "warnings": [],
+            "followups": [],
+        }
+
+    monkeypatch.setattr(app, "_call_rag_direct", fake_rag)
+
+    app.ingest_and_summarize_uploads(session, [upload_path])
+
+    assert captured["providers"] is rag_override
+
+
+def test_process_turn_forwards_extra_callbacks_to_kernel(tmp_path: Path, monkeypatch):
+    settings = _runtime_settings(tmp_path)
+    providers = SimpleNamespace(chat=object(), judge=object(), embeddings=object())
+    stores = SimpleNamespace()
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.load_basic_chat_skills", lambda settings: "Be concise.")
+    monkeypatch.setattr("agentic_chatbot_next.app.service.ensure_kb_indexed", lambda *args, **kwargs: None)
+
+    class _NoopSkillIndexSync:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def sync(self, tenant_id: str) -> None:
+            return None
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.SkillIndexSync", _NoopSkillIndexSync)
+    monkeypatch.setattr(
+        "agentic_chatbot_next.app.service.route_turn",
+        lambda *args, **kwargs: SimpleNamespace(
+            route="BASIC",
+            confidence=1.0,
+            reasons=["deterministic"],
+            router_method="deterministic",
+            suggested_agent="",
+        ),
+    )
+
+    app = RuntimeService(AppContext(settings=settings, providers=providers, stores=stores))
+    session = ChatSession(tenant_id="tenant", user_id="user", conversation_id="callbacks-conv")
+    callback = object()
+    captured: dict[str, object] = {}
+
+    def fake_basic_turn(session_arg, *, user_text, system_prompt, chat_llm, route_metadata, callbacks):
+        captured["session"] = session_arg
+        captured["callbacks"] = callbacks
+        captured["route"] = dict(route_metadata or {})
+        return "ok"
+
+    monkeypatch.setattr(app.kernel, "process_basic_turn", fake_basic_turn)
+
+    text = app.process_turn(session, user_text="hello", extra_callbacks=[callback])
+
+    assert text == "ok"
+    assert captured["session"] is session
+    assert captured["callbacks"] == [callback]
+    assert captured["route"]["route"] == "BASIC"
+
+
+def test_process_turn_uses_basic_agent_provider_override_for_basic_route(tmp_path: Path, monkeypatch):
+    settings = _runtime_settings(tmp_path)
+    providers = SimpleNamespace(chat=object(), judge=object(), embeddings=object())
+    stores = SimpleNamespace()
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.load_basic_chat_skills", lambda settings: "Be concise.")
+    monkeypatch.setattr("agentic_chatbot_next.app.service.ensure_kb_indexed", lambda *args, **kwargs: None)
+
+    class _NoopSkillIndexSync:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def sync(self, tenant_id: str) -> None:
+            return None
+
+    monkeypatch.setattr("agentic_chatbot_next.app.service.SkillIndexSync", _NoopSkillIndexSync)
+    monkeypatch.setattr(
+        "agentic_chatbot_next.app.service.route_turn",
+        lambda *args, **kwargs: SimpleNamespace(
+            route="BASIC",
+            confidence=1.0,
+            reasons=["deterministic"],
+            router_method="deterministic",
+            suggested_agent="",
+        ),
+    )
+
+    app = RuntimeService(AppContext(settings=settings, providers=providers, stores=stores))
+    session = ChatSession(tenant_id="tenant", user_id="user", conversation_id="basic-override-conv")
+    basic_override = SimpleNamespace(chat=object(), judge=object(), embeddings=providers.embeddings)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app.kernel,
+        "resolve_providers_for_agent",
+        lambda agent_name: basic_override if agent_name == "basic" else providers,
+    )
+
+    def fake_basic_turn(session_arg, *, user_text, system_prompt, chat_llm, route_metadata, callbacks):
+        del session_arg, user_text, system_prompt, route_metadata, callbacks
+        captured["chat_llm"] = chat_llm
+        return "ok"
+
+    monkeypatch.setattr(app.kernel, "process_basic_turn", fake_basic_turn)
+
+    text = app.process_turn(session, user_text="hello")
+
+    assert text == "ok"
+    assert captured["chat_llm"] is basic_override.chat
