@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 
 logger = logging.getLogger(__name__)
 

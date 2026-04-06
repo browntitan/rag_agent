@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agentic_chatbot.config import load_settings
-from agentic_chatbot.providers import validate_provider_configuration
+from agentic_chatbot_next.config import load_settings
+from agentic_chatbot_next.providers import validate_provider_configuration
 
 
 _ENV_KEYS = [

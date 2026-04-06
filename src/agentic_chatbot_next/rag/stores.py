@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Callable, List
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 from agentic_chatbot_next.persistence.postgres.chunks import ChunkStore
 from agentic_chatbot_next.persistence.postgres.connection import apply_schema, init_pool
 from agentic_chatbot_next.persistence.postgres.documents import DocumentStore

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from agentic_chatbot.sandbox.exceptions import SandboxUnavailableError
+from agentic_chatbot_next.sandbox.exceptions import SandboxUnavailableError
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ from agentic_chatbot.sandbox.exceptions import SandboxUnavailableError
 
 def _make_executor(**kwargs):
     """Create a DockerSandboxExecutor with test-friendly defaults."""
-    from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+    from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
     return DockerSandboxExecutor(
         image="python:3.12-slim",
         timeout_seconds=10,
@@ -84,7 +84,7 @@ class TestDockerDaemonUnavailable:
 
 class TestExecuteSimpleCode:
     def test_returns_sandbox_result(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor, SandboxResult
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor, SandboxResult
 
         executor = _make_executor()
         mock_docker = MagicMock()
@@ -135,7 +135,7 @@ class TestExecuteSimpleCode:
         assert kwargs.get("network_disabled") is True
 
     def test_memory_limit_passed(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
 
         executor = DockerSandboxExecutor.__new__(DockerSandboxExecutor)
         executor.image = "python:3.12-slim"
@@ -163,14 +163,14 @@ class TestExecuteSimpleCode:
 
 class TestExecuteWithPackages:
     def test_default_packages_in_run_script(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor, _DEFAULT_PACKAGES
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor, _DEFAULT_PACKAGES
         executor = _make_executor()
         script = executor._build_run_script("print('hi')", list(_DEFAULT_PACKAGES))
         for pkg in _DEFAULT_PACKAGES:
             assert pkg in script
 
     def test_pip_install_line_present(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
         executor = _make_executor()
         script = executor._build_run_script("print('hi')", ["pandas", "numpy"])
         assert "pip install" in script
@@ -178,7 +178,7 @@ class TestExecuteWithPackages:
         assert "numpy" in script
 
     def test_user_packages_merged_with_defaults(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor, _DEFAULT_PACKAGES
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor, _DEFAULT_PACKAGES
         executor = _make_executor()
         mock_docker = MagicMock()
         mock_client = mock_docker.from_env.return_value
@@ -284,7 +284,7 @@ class TestExecuteWithFiles:
 
 class TestOutputTruncation:
     def test_large_stdout_is_truncated(self):
-        from agentic_chatbot.sandbox.docker_executor import _MAX_OUTPUT_BYTES
+        from agentic_chatbot_next.sandbox.docker_exec import _MAX_OUTPUT_BYTES
         executor = _make_executor()
         mock_docker = MagicMock()
 
@@ -339,7 +339,7 @@ class TestNonZeroExitCode:
 
 class TestBuildRunScript:
     def test_script_contains_code(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
         executor = _make_executor()
         code = "import pandas as pd\nprint(pd.__version__)"
         script = executor._build_run_script(code, ["pandas"])
@@ -347,13 +347,13 @@ class TestBuildRunScript:
         assert "print(pd.__version__)" in script
 
     def test_script_runs_python(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
         executor = _make_executor()
         script = executor._build_run_script("print('hi')", [])
         assert "python" in script
 
     def test_script_uses_workspace_dir(self):
-        from agentic_chatbot.sandbox.docker_executor import DockerSandboxExecutor
+        from agentic_chatbot_next.sandbox.docker_exec import DockerSandboxExecutor
         executor = _make_executor()
         script = executor._build_run_script("print('hi')", [])
         assert "/workspace" in script

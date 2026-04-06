@@ -16,7 +16,7 @@ from new_demo_notebook.lib.scenario_runner import (  # noqa: E402
     load_scenarios,
     validate_agent_coverage,
 )
-from new_demo_notebook.lib.preflight import run_preflight  # noqa: E402
+from new_demo_notebook.lib.preflight import PreflightCheck, run_preflight  # noqa: E402
 from new_demo_notebook.lib.server import BackendServerManager  # noqa: E402
 from new_demo_notebook.lib.client import GatewayClient  # noqa: E402
 from new_demo_notebook.lib.trace_reader import (  # noqa: E402
@@ -544,3 +544,47 @@ def test_preflight_reports_missing_docker_and_unreachable_db(monkeypatch, tmp_pa
     assert rows["docker"]["ok"] is False
     assert rows["database"]["ok"] is False
     assert rows["chat_provider"]["ok"] is False
+
+
+def test_preflight_accepts_runtime_default_chat_model_and_latest_alias(monkeypatch, tmp_path: Path):
+    for env_name in (
+        "LLM_PROVIDER",
+        "EMBEDDINGS_PROVIDER",
+        "JUDGE_PROVIDER",
+        "OLLAMA_CHAT_MODEL",
+        "OLLAMA_JUDGE_MODEL",
+        "OLLAMA_EMBED_MODEL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    class DummyOllamaResponse:
+        status_code = 200
+
+        def json(self):
+            return {"models": [{"name": "qwen3.5:9b"}, {"name": "nomic-embed-text:latest"}]}
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("new_demo_notebook.lib.preflight.httpx.get", lambda *args, **kwargs: DummyOllamaResponse())
+    monkeypatch.setattr(
+        "new_demo_notebook.lib.preflight._check_database",
+        lambda: PreflightCheck(name="database", ok=True, detail="localhost:5432 reachable"),
+    )
+    monkeypatch.setattr(
+        "new_demo_notebook.lib.preflight._check_docker",
+        lambda: PreflightCheck(name="docker", ok=True, detail="docker daemon reachable"),
+    )
+
+    report = run_preflight(
+        repo_root=tmp_path,
+        runtime_root=tmp_path / "runtime",
+        workspace_root=tmp_path / "workspaces",
+        memory_root=tmp_path / "memory",
+    )
+
+    rows = {row["name"]: row for row in report.to_rows()}
+    assert report.ready is True
+    assert rows["chat_provider_model"]["ok"] is True
+    assert rows["judge_provider_model"]["ok"] is True
+    assert rows["embeddings_provider_model"]["ok"] is True

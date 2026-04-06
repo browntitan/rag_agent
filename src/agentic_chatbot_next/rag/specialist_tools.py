@@ -7,7 +7,7 @@ from typing import Any, List
 
 from langchain_core.tools import tool
 
-from agentic_chatbot.config import Settings
+from agentic_chatbot_next.config import Settings
 from agentic_chatbot_next.persistence.postgres.chunks import ChunkRecord, ScoredChunk
 from agentic_chatbot_next.rag.stores import KnowledgeStores
 

@@ -32,6 +32,15 @@ The next-owned RAG flow is:
 4. synthesize the answer from bounded evidence
 5. coerce the result into the stable contract
 
+Implementation notes:
+
+- `run_rag_contract(...)` currently accepts `skill_context`, `task_context`, and
+  `max_retries` for boundary compatibility, but the live implementation does not use those
+  inputs yet
+- the helper tool factories under `src/agentic_chatbot_next/rag/specialist_tools.py` and
+  `src/agentic_chatbot_next/rag/extended_tools.py` exist in the repo, but the live contract
+  path does not assemble them
+
 ## Corpus model
 
 The live corpus remains DB-first:

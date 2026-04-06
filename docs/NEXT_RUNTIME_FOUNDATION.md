@@ -3,6 +3,10 @@
 `src/agentic_chatbot_next/` is no longer just a foundation package. It is the live runtime
 used by the CLI and FastAPI gateway.
 
+This is also an intentional breaking change for in-process callers: the removed
+`agentic_chatbot.runtime.*` package and `agentic_chatbot.agents.orchestrator.ChatbotApp`
+compatibility layer are no longer supported import paths.
+
 ## What changed
 
 The original purpose of `agentic_chatbot_next` was to stage a cleaner runtime with:
@@ -17,7 +21,7 @@ That cutover is now complete enough that the live entrypoints use the next runti
 
 ## Current role in the repository
 
-Live:
+Live runtime surface:
 
 - `src/agentic_chatbot_next/app/service.py`
 - `src/agentic_chatbot_next/runtime/*`
@@ -26,11 +30,6 @@ Live:
 - `src/agentic_chatbot_next/memory/*`
 - `data/agents/*.md`
 
-Compatibility/reference only:
-
-- `src/agentic_chatbot/agents/orchestrator.py` as a deprecated shim
-- `src/agentic_chatbot/runtime/*` as legacy reference code
-
 ## Live source of truth
 
 ### Agent definitions
@@ -38,8 +37,7 @@ Compatibility/reference only:
 The live runtime resolves agents from `data/agents/*.md`. Markdown frontmatter is now the
 authoritative agent-definition format.
 
-The legacy `data/agents/*.json` artifacts have been retired from the live repo state and are
-no longer part of the runtime contract.
+Historical JSON agent artifacts are not part of the current runtime contract.
 
 ### Runtime paths
 
@@ -66,30 +64,19 @@ Derived files:
 - `MEMORY.md`
 - `topics/*.md`
 
-The legacy PostgreSQL memory table is not the live memory path for `agentic_chatbot_next`.
+The PostgreSQL memory table is not the live memory path for `agentic_chatbot_next`.
 
-## What is still shared
+## Cutover status
 
-`agentic_chatbot_next` is live, but not every low-level primitive has been rewritten from
-scratch yet.
+The hard cut is complete: the live runtime now owns its config, provider factories, Postgres
+primitives, sandbox exceptions, and low-level ingest helpers under `src/agentic_chatbot_next/`.
 
-Shared infrastructure that may still come from `src/agentic_chatbot/`:
-
-- provider factories
-- DB primitives
-- `config.Settings`
-- sandbox exception types
-- low-level OCR / clause-splitting / structure-detection helpers
-
-This boundary is intentional and enforced by the next-runtime import-boundary test. Runtime-
-facing orchestration must not import legacy router, runtime-kernel, or orchestrator modules.
-
-What matters operationally is that runtime-facing orchestration now lives behind the next
-runtime modules and the public API/CLI surface is driven by them.
+The import-boundary test now enforces that runtime code, tests, examples, and notebook helpers
+do not import `agentic_chatbot.*`.
 
 ## Acceptance verification
 
-The authoritative live acceptance gate is the scenario harness plus the executed notebook
+The authoritative live acceptance gate is the optional scenario harness plus the executed notebook
 smoke in `tests/test_next_acceptance_harness.py`.
 
 Verified local operator flow:
@@ -118,6 +105,10 @@ The long-timeout harness-only env vars for this flow are:
 `NEXT_RUNTIME_NOTEBOOK_EXECUTION_TIMEOUT_SECONDS` are operator env knobs for the notebook and
 acceptance helpers only. They are not part of `config.Settings`, the public CLI contract, or
 the public API surface.
+
+`new_demo_notebook/` remains a supported harness for demos and acceptance coverage, but it is
+support infrastructure around the live next runtime rather than part of the runtime package
+boundary itself.
 
 Acceptance evidence is written to:
 

@@ -10,6 +10,7 @@ from agentic_chatbot_next.contracts.messages import SessionState
 from agentic_chatbot_next.memory.context_builder import MemoryContextBuilder
 from agentic_chatbot_next.memory.extractor import MemoryExtractor
 from agentic_chatbot_next.memory.file_store import FileMemoryStore
+from agentic_chatbot_next.runtime.kernel import RuntimeKernel
 from agentic_chatbot_next.runtime.context import RuntimePaths
 
 
@@ -188,3 +189,77 @@ def test_file_memory_store_serializes_parallel_writes_to_same_scope(tmp_path: Pa
         scope="user",
     )
     assert keys == [f"key_{index}" for index in range(8)]
+
+
+def test_runtime_memory_maintenance_uses_heuristic_conversation_scope_by_default(tmp_path: Path) -> None:
+    settings = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        workspace_dir=tmp_path / "workspaces",
+        memory_dir=tmp_path / "memory",
+        agents_dir=Path(__file__).resolve().parents[1] / "data" / "agents",
+        skills_dir=Path(__file__).resolve().parents[1] / "data" / "skills",
+        runtime_events_enabled=True,
+        max_worker_concurrency=2,
+    )
+    kernel = RuntimeKernel(settings, providers=None, stores=None)
+    session = _session()
+
+    kernel._run_post_turn_memory_maintenance(session, latest_text="project_status=active")
+
+    assert (
+        kernel.file_memory_store.get(
+            tenant_id="tenant",
+            user_id="user",
+            conversation_id="conversation",
+            scope="conversation",
+            key="project_status",
+        )
+        == "active"
+    )
+    assert (
+        kernel.file_memory_store.get(
+            tenant_id="tenant",
+            user_id="user",
+            conversation_id="conversation",
+            scope="user",
+            key="project_status",
+        )
+        is None
+    )
+
+
+def test_runtime_memory_maintenance_requires_explicit_intent_for_user_scope(tmp_path: Path) -> None:
+    settings = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime",
+        workspace_dir=tmp_path / "workspaces",
+        memory_dir=tmp_path / "memory",
+        agents_dir=Path(__file__).resolve().parents[1] / "data" / "agents",
+        skills_dir=Path(__file__).resolve().parents[1] / "data" / "skills",
+        runtime_events_enabled=True,
+        max_worker_concurrency=2,
+    )
+    kernel = RuntimeKernel(settings, providers=None, stores=None)
+    session = _session()
+
+    kernel._run_post_turn_memory_maintenance(session, latest_text="Remember favorite_editor=Neovim")
+
+    assert (
+        kernel.file_memory_store.get(
+            tenant_id="tenant",
+            user_id="user",
+            conversation_id="conversation",
+            scope="conversation",
+            key="favorite_editor",
+        )
+        == "Neovim"
+    )
+    assert (
+        kernel.file_memory_store.get(
+            tenant_id="tenant",
+            user_id="user",
+            conversation_id="conversation",
+            scope="user",
+            key="favorite_editor",
+        )
+        == "Neovim"
+    )

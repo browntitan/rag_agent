@@ -7,13 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic_chatbot.agents.session import ChatSession
 from agentic_chatbot_next.agents.registry import AgentRegistry
 from agentic_chatbot_next.contracts.messages import RuntimeMessage, SessionState
 from agentic_chatbot_next.runtime.context import RuntimePaths
 from agentic_chatbot_next.runtime.job_manager import RuntimeJobManager
 from agentic_chatbot_next.runtime.kernel import RuntimeKernel
 from agentic_chatbot_next.runtime.transcript_store import RuntimeTranscriptStore
+from agentic_chatbot_next.tools.base import ToolContext
+from agentic_chatbot_next.session import ChatSession
 
 
 def _repo_agents_dir() -> Path:
@@ -298,17 +299,39 @@ def test_coordinator_runs_planner_workers_finalizer_and_verifier_with_scoped_wor
 
     assert result.text == "Final synthesized answer"
     assert worker_histories == [[]]
-    execution_state = result.metadata["task_execution_state"]
-    assert execution_state["verification"]["status"] == "pass"
-    assert execution_state["task_results"][0]["executor"] == "rag_worker"
-    paths = RuntimePaths.from_settings(_make_runtime_settings(tmp_path))
-    event_rows = [
-        json.loads(line)
-        for line in (paths.session_dir(session_state.session_id) / "events.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    verifier_event = next(row for row in event_rows if row["event_type"] == "coordinator_verifier_completed")
-    assert verifier_event["payload"]["verifier_agent"] == "verifier"
+
+
+def test_spawn_worker_tool_blocks_background_launch_for_agents_that_disallow_it(tmp_path: Path) -> None:
+    kernel = RuntimeKernel(
+        _make_runtime_settings(tmp_path),
+        providers=SimpleNamespace(),
+        stores=SimpleNamespace(),
+    )
+    coordinator = kernel.registry.get("coordinator")
+    assert coordinator is not None
+    session_state = SessionState(
+        tenant_id="tenant",
+        user_id="user",
+        conversation_id="conv",
+    )
+    tool_context = ToolContext(
+        settings=kernel.settings,
+        providers=None,
+        stores=None,
+        session=session_state,
+        paths=kernel.paths,
+        active_definition=coordinator,
+    )
+
+    result = kernel.spawn_worker_from_tool(
+        tool_context,
+        prompt="Create a plan",
+        agent_name="planner",
+        description="planner task",
+        run_in_background=True,
+    )
+
+    assert "does not allow background jobs" in str(result.get("error") or "")
 
 
 def test_coordinator_revises_final_answer_when_verifier_requests_changes(

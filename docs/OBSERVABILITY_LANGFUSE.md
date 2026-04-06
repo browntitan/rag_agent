@@ -10,7 +10,11 @@ the file-backed persistence written from `src/agentic_chatbot_next/runtime/*`.
 
 ## Langfuse layer
 
-Callback wiring lives in `src/agentic_chatbot/observability/callbacks.py`.
+The repo-level observability surface re-exports the live next-runtime callbacks from
+`src/agentic_chatbot_next/observability/__init__.py`.
+
+The current callback implementation lives in
+`src/agentic_chatbot_next/observability/callbacks.py`.
 
 When Langfuse keys are set, the live runtime attaches callbacks for:
 
@@ -82,17 +86,26 @@ acceptance triage, also inspect `state.json` and `transcript.jsonl`.
 The runtime emits structured `RuntimeEvent` records for:
 
 - router decisions: `router_decision`
+- turn lifecycle: `turn_accepted`, `turn_completed`, `turn_failed`
 - BASIC-turn lifecycle: `basic_turn_started`, `basic_turn_completed`, `basic_turn_failed`
+- agent lifecycle: `agent_run_started`, `agent_run_completed`
 - AGENT-turn lifecycle: `agent_turn_started`, `agent_turn_completed`, `agent_turn_failed`
 - coordinator phases:
   `coordinator_planning_started`, `coordinator_planning_completed`,
   `coordinator_batch_started`, `coordinator_finalizer_completed`,
   `coordinator_verifier_completed`
-- worker lifecycle: `worker_agent_started`, `worker_agent_completed`, `worker_agent_failed`
+- worker lifecycle: `worker_agent_started`, `worker_agent_completed`
 - job lifecycle: `job_created`, `job_started`, `job_completed`, `job_failed`, `job_stopped`
-- mailbox lifecycle: `job_message_enqueued`
+- mailbox lifecycle: `mailbox_enqueued`
+- notification lifecycle: `notification_appended`
+- memory extraction lifecycle:
+  `memory_extraction_started`, `memory_extraction_completed`,
+  `memory_extraction_failed`, `memory_extraction_skipped`
 - callback-driven model lifecycle: `model_start`, `model_end`, `model_error`
 - callback-driven tool lifecycle: `tool_start`, `tool_end`, `tool_error`
+
+Worker execution failures currently show up through `job_failed`; the runtime does not emit a
+separate `worker_agent_failed` event today.
 
 Each event row carries the persisted `RuntimeEvent` envelope:
 
@@ -155,5 +168,4 @@ Local runtime files are useful for:
 If Langfuse is enabled, use it for trace exploration.
 
 If you need the durable local source of truth, inspect the artifacts written by
-`src/agentic_chatbot_next/runtime/*`, not the legacy `src/agentic_chatbot/runtime/*`
-reference package.
+`src/agentic_chatbot_next/runtime/*`.

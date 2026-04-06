@@ -17,9 +17,12 @@ The router may suggest:
 
 - `coordinator`
 - `data_analyst`
+- `rag_worker`
 - `""`
 
 If no hint is returned, AGENT turns normally start in `general`.
+If `ENABLE_COORDINATOR_MODE=true`, `policy.py` forces `coordinator` as the initial AGENT
+role regardless of the router hint.
 
 ## Hard AGENT signals
 

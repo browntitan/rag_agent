@@ -61,13 +61,15 @@ class QueryLoop:
         session_state: SessionState,
         *,
         user_text: str,
+        providers: Any | None = None,
         tool_context: Any | None = None,
         tools: Optional[List[Any]] = None,
         task_payload: Optional[Dict[str, Any]] = None,
     ) -> QueryLoopResult:
         callbacks = list(getattr(tool_context, "callbacks", []) or [])
+        active_providers = providers or self.providers
         if agent.mode != "memory_maintainer":
-            if self.providers is None or getattr(self.providers, "chat", None) is None:
+            if active_providers is None or getattr(active_providers, "chat", None) is None:
                 raise RuntimeError("QueryLoop requires configured providers for live execution.")
 
         skill_context = ""
@@ -81,13 +83,34 @@ class QueryLoop:
             tool_context.skill_context = skill_context
 
         if agent.mode == "basic":
-            return self._run_basic(agent, session_state, user_text=user_text, skill_context=skill_context, callbacks=callbacks)
+            return self._run_basic(
+                agent,
+                session_state,
+                user_text=user_text,
+                skill_context=skill_context,
+                callbacks=callbacks,
+                providers=active_providers,
+            )
         if agent.mode == "rag":
-            return self._run_rag(agent, session_state, user_text=user_text, skill_context=skill_context, callbacks=callbacks)
+            return self._run_rag(
+                agent,
+                session_state,
+                user_text=user_text,
+                skill_context=skill_context,
+                callbacks=callbacks,
+                providers=active_providers,
+            )
         if agent.mode == "memory_maintainer":
             return self._run_memory_maintainer(agent, session_state, user_text=user_text)
         if agent.mode == "planner":
-            return self._run_planner(agent, session_state, user_text=user_text, skill_context=skill_context, callbacks=callbacks)
+            return self._run_planner(
+                agent,
+                session_state,
+                user_text=user_text,
+                skill_context=skill_context,
+                callbacks=callbacks,
+                providers=active_providers,
+            )
         if agent.mode == "finalizer":
             return self._run_finalizer(
                 agent,
@@ -96,6 +119,7 @@ class QueryLoop:
                 skill_context=skill_context,
                 task_payload=dict(task_payload or {}),
                 callbacks=callbacks,
+                providers=active_providers,
             )
         if agent.mode == "verifier":
             return self._run_verifier(
@@ -105,15 +129,40 @@ class QueryLoop:
                 skill_context=skill_context,
                 task_payload=dict(task_payload or {}),
                 callbacks=callbacks,
+                providers=active_providers,
             )
         return self._run_react(
             agent,
             session_state,
             user_text=user_text,
             skill_context=skill_context,
+            providers=active_providers,
             tool_context=tool_context,
             tools=list(tools or []),
         )
+
+    def _build_task_context(self, task_payload: Dict[str, Any] | None) -> str:
+        payload = dict(task_payload or {})
+        worker_request = dict(payload.get("worker_request") or {})
+        if not worker_request:
+            return ""
+        lines: List[str] = []
+        task_id = str(worker_request.get("task_id") or "").strip()
+        title = str(worker_request.get("title") or "").strip()
+        description = str(worker_request.get("description") or "").strip()
+        if task_id:
+            lines.append(f"task_id: {task_id}")
+        if title:
+            lines.append(f"title: {title}")
+        if description:
+            lines.append(f"description: {description}")
+        doc_scope = [str(item).strip() for item in (worker_request.get("doc_scope") or []) if str(item).strip()]
+        if doc_scope:
+            lines.append("doc_scope: " + ", ".join(doc_scope))
+        artifact_refs = [str(item).strip() for item in (worker_request.get("artifact_refs") or []) if str(item).strip()]
+        if artifact_refs:
+            lines.append("artifact_refs: " + ", ".join(artifact_refs))
+        return "\n".join(lines).strip()
 
     def _build_system_prompt(
         self,
@@ -121,16 +170,20 @@ class QueryLoop:
         session_state: SessionState,
         *,
         skill_context: str = "",
+        task_payload: Dict[str, Any] | None = None,
     ) -> str:
         prompt = ""
         if self.skill_runtime is not None:
-            prompt = self.skill_runtime.build_prompt(agent, skill_context=skill_context).strip()
+            prompt = self.skill_runtime.build_prompt(agent).strip()
         if not prompt:
             prompt = f"You are the {agent.name} agent."
+        task_context = self._build_task_context(task_payload)
         memory_context = ""
         if self._memory_context is not None:
             memory_context = self._memory_context.build_for_agent(agent, session_state)
         blocks = [prompt]
+        if task_context:
+            blocks.append(f"## Task Context\n{task_context}")
         if skill_context:
             blocks.append(f"## Skill Context\n{skill_context}")
         if memory_context:
@@ -146,10 +199,11 @@ class QueryLoop:
         user_text: str,
         skill_context: str,
         callbacks: List[Any],
+        providers: Any,
     ) -> QueryLoopResult:
         system_prompt = self._build_system_prompt(agent, session_state, skill_context=skill_context)
         text = run_basic_chat(
-            self.providers.chat,
+            providers.chat,
             messages=[message.to_langchain() for message in session_state.messages[:-1]],
             user_text=user_text,
             system_prompt=system_prompt,
@@ -168,14 +222,20 @@ class QueryLoop:
         *,
         user_text: str,
         skill_context: str,
+        providers: Any,
         tool_context: Any,
         tools: List[Any],
     ) -> QueryLoopResult:
         if tool_context is None:
             raise ValueError("React execution requires a tool context.")
-        system_prompt = self._build_system_prompt(agent, session_state, skill_context=skill_context)
+        system_prompt = self._build_system_prompt(
+            agent,
+            session_state,
+            skill_context=skill_context,
+            task_payload=dict(getattr(tool_context, "metadata", {}) or {}).get("task_payload") or {},
+        )
         final_text, updated_messages, run_stats = run_general_agent(
-            self.providers.chat,
+            providers.chat,
             tools=tools,
             messages=[message.to_langchain() for message in session_state.messages[:-1]],
             user_text=user_text,
@@ -201,11 +261,12 @@ class QueryLoop:
         user_text: str,
         skill_context: str,
         callbacks: List[Any],
+        providers: Any,
     ) -> QueryLoopResult:
         contract = run_rag_contract(
             self.settings,
             self.stores,
-            providers=self.providers,
+            providers=providers,
             session=session_state,
             query=user_text,
             conversation_context=_recent_conversation_context(session_state),
@@ -260,6 +321,7 @@ class QueryLoop:
         user_text: str,
         skill_context: str,
         callbacks: List[Any],
+        providers: Any,
     ) -> QueryLoopResult:
         system_prompt = self._build_system_prompt(agent, session_state, skill_context=skill_context)
         prompt = (
@@ -276,7 +338,7 @@ class QueryLoop:
         )
         text = ""
         try:
-            response = self.providers.chat.invoke(
+            response = providers.chat.invoke(
                 [SystemMessage(content=system_prompt), HumanMessage(content=prompt)],
                 config={"callbacks": callbacks},
             )
@@ -309,11 +371,17 @@ class QueryLoop:
         skill_context: str,
         task_payload: Dict[str, Any],
         callbacks: List[Any],
+        providers: Any,
     ) -> QueryLoopResult:
-        system_prompt = self._build_system_prompt(agent, session_state, skill_context=skill_context)
+        system_prompt = self._build_system_prompt(
+            agent,
+            session_state,
+            skill_context=skill_context,
+            task_payload=task_payload,
+        )
         final_text = ""
         try:
-            response = self.providers.chat.invoke(
+            response = providers.chat.invoke(
                 [
                     SystemMessage(content=system_prompt),
                     HumanMessage(
@@ -346,8 +414,14 @@ class QueryLoop:
         skill_context: str,
         task_payload: Dict[str, Any],
         callbacks: List[Any],
+        providers: Any,
     ) -> QueryLoopResult:
-        system_prompt = self._build_system_prompt(agent, session_state, skill_context=skill_context)
+        system_prompt = self._build_system_prompt(
+            agent,
+            session_state,
+            skill_context=skill_context,
+            task_payload=task_payload,
+        )
         verification = {
             "status": "pass",
             "summary": "No verification issues detected.",
@@ -355,7 +429,7 @@ class QueryLoop:
             "feedback": "",
         }
         try:
-            response = self.providers.chat.invoke(
+            response = providers.chat.invoke(
                 [
                     SystemMessage(content=system_prompt),
                     HumanMessage(

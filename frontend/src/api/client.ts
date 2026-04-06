@@ -1,11 +1,119 @@
-import type { ProgressEvent, UploadResult } from '../types'
+import type { BackendStatus, ProgressEvent, UploadResult } from '../types'
 
 const API_BASE = '/v1'
+const BACKEND_API_URL = 'http://localhost:8000'
+const BACKEND_START_COMMAND = 'python run.py serve-api --host 0.0.0.0 --port 8000'
+
+export const BACKEND_UNAVAILABLE_MESSAGE =
+  `The backend API is unavailable at ${BACKEND_API_URL}. Start it with "${BACKEND_START_COMMAND}" and then retry.`
+
+class ApiError extends Error {
+  status?: number
+  backendUnavailable: boolean
+
+  constructor(message: string, options?: { status?: number; backendUnavailable?: boolean }) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = options?.status
+    this.backendUnavailable = options?.backendUnavailable ?? false
+  }
+}
+
+function createBackendUnavailableError(): ApiError {
+  return new ApiError(BACKEND_UNAVAILABLE_MESSAGE, { backendUnavailable: true })
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function extractErrorMessage(payload: unknown): string | null {
+  if (typeof payload === 'string') {
+    const value = payload.trim()
+    return value.length > 0 ? value : null
+  }
+
+  if (!payload || typeof payload !== 'object') return null
+
+  const record = payload as Record<string, unknown>
+
+  if (typeof record.detail === 'string' && record.detail.trim().length > 0) {
+    return record.detail.trim()
+  }
+
+  if (Array.isArray(record.detail)) {
+    const parts = record.detail
+      .map(item => extractErrorMessage(item))
+      .filter((item): item is string => !!item)
+    if (parts.length > 0) return parts.join(', ')
+  }
+
+  if (typeof record.error === 'string' && record.error.trim().length > 0) {
+    return record.error.trim()
+  }
+
+  if (typeof record.message === 'string' && record.message.trim().length > 0) {
+    return record.message.trim()
+  }
+
+  return null
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (contentType.includes('application/json')) {
+    try {
+      const payload = await response.clone().json()
+      const message = extractErrorMessage(payload)
+      if (message) return message
+    } catch {
+      // Fall back to raw text when the body is not valid JSON.
+    }
+  }
+
+  try {
+    return (await response.text()).trim()
+  } catch {
+    return ''
+  }
+}
+
+async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  let response: Response
+
+  try {
+    response = await fetch(path, init)
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    throw createBackendUnavailableError()
+  }
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response)
+
+    if (response.status === 500 && message.length === 0) {
+      throw createBackendUnavailableError()
+    }
+
+    throw new ApiError(message || `HTTP ${response.status}`, { status: response.status })
+  }
+
+  return response
+}
+
+export function isBackendUnavailableError(error: unknown): boolean {
+  return error instanceof ApiError && error.backendUnavailable
+}
+
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message
+  return 'Unknown error'
+}
 
 export async function getModelId(): Promise<string> {
   try {
-    const res = await fetch(`${API_BASE}/models`)
-    if (!res.ok) return 'enterprise-agent'
+    const res = await apiFetch(`${API_BASE}/models`)
     const data = await res.json()
     return data?.data?.[0]?.id ?? 'enterprise-agent'
   } catch {
@@ -38,7 +146,7 @@ export async function* streamChatCompletion(
 ): AsyncGenerator<StreamEvent> {
   const model = await modelId()
 
-  const res = await fetch(`${API_BASE}/chat/completions`, {
+  const res = await apiFetch(`${API_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -47,11 +155,6 @@ export async function* streamChatCompletion(
     body: JSON.stringify({ model, messages, stream: true }),
     signal,
   })
-
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => 'Unknown error')
-    throw new Error(`HTTP ${res.status}: ${errorText}`)
-  }
 
   if (!res.body) throw new Error('No response body')
 
@@ -124,25 +227,21 @@ export async function uploadFiles(
   const form = new FormData()
   for (const f of files) form.append('files', f)
 
-  const res = await fetch(`${API_BASE}/upload`, {
+  const res = await apiFetch(`${API_BASE}/upload`, {
     method: 'POST',
     headers: { 'X-Conversation-ID': conversationId },
     body: form,
   })
 
-  if (!res.ok) {
-    const msg = await res.text().catch(() => 'Upload failed')
-    throw new Error(msg)
-  }
   return res.json() as Promise<UploadResult>
 }
 
 /** Check if the backend is healthy and ready. */
-export async function checkHealth(): Promise<boolean> {
+export async function checkHealth(): Promise<BackendStatus> {
   try {
-    const res = await fetch('/health/ready')
-    return res.ok
-  } catch {
-    return false
+    await apiFetch('/health/ready')
+    return { ready: true }
+  } catch (error) {
+    return { ready: false, message: getErrorMessage(error) }
   }
 }

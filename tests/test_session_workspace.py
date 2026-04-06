@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from agentic_chatbot.sandbox.session_workspace import (
+from agentic_chatbot_next.runtime.context import filesystem_key
+from agentic_chatbot_next.sandbox.workspace import (
     SessionWorkspace,
     WorkspacePathError,
     _safe_filename,
@@ -73,7 +74,7 @@ class TestSafeFilename:
 class TestForSession:
     def test_root_is_workspace_dir_slash_session_id(self, tmp_path):
         ws = SessionWorkspace.for_session("abc123", tmp_path)
-        assert ws.root == tmp_path / "abc123"
+        assert ws.root == tmp_path / filesystem_key("abc123")
 
     def test_directory_not_created_before_open(self, tmp_path):
         ws = SessionWorkspace.for_session("abc123", tmp_path)

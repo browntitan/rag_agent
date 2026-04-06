@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from agentic_chatbot.config import Settings
-from agentic_chatbot.db.skill_store import SkillChunkMatch, SkillPackRecord
+from agentic_chatbot_next.config import Settings
+from agentic_chatbot_next.persistence.postgres.skills import SkillChunkMatch, SkillPackRecord
 from agentic_chatbot_next.persistence.postgres.skills import SkillStore
 from agentic_chatbot_next.rag.stores import KnowledgeStores
 from agentic_chatbot_next.skills.pack_loader import load_skill_pack_from_file

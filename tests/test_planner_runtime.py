@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agentic_chatbot.runtime.task_plan import build_fallback_plan, normalise_task_plan, select_execution_batch
+from agentic_chatbot_next.runtime.task_plan import build_fallback_plan, normalise_task_plan, select_execution_batch
 
 
 def test_single_step_request_produces_one_sequential_task():

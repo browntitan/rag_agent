@@ -33,3 +33,62 @@ class AgentRegistry:
 
     def get_loaded_file(self, name: str) -> Optional[LoadedAgentFile]:
         return self._loaded_files.get(name)
+
+    @staticmethod
+    def _role_kind(agent: AgentDefinition) -> str:
+        return str(agent.metadata.get("role_kind") or "").strip().lower()
+
+    @staticmethod
+    def _entry_path(agent: AgentDefinition) -> str:
+        return str(agent.metadata.get("entry_path") or "").strip().lower()
+
+    @staticmethod
+    def _expected_output(agent: AgentDefinition) -> str:
+        return str(agent.metadata.get("expected_output") or "").strip().lower()
+
+    def is_routable(self, agent: AgentDefinition) -> bool:
+        role_kind = self._role_kind(agent)
+        entry_path = self._entry_path(agent)
+        return role_kind in {"top_level", "top_level_or_worker", "manager"} or entry_path in {
+            "default",
+            "router_basic",
+            "router_fast_path_or_delegated",
+            "router_or_delegated",
+        }
+
+    def list_routable(self) -> List[AgentDefinition]:
+        return [definition for definition in self.list() if self.is_routable(definition)]
+
+    def get_default_agent_name(self) -> str:
+        for agent in self.list_routable():
+            if self._entry_path(agent) == "default":
+                return agent.name
+        for agent in self.list_routable():
+            if self._role_kind(agent) in {"top_level", "top_level_or_worker"} and agent.mode != "basic":
+                return agent.name
+        return "general"
+
+    def get_basic_agent_name(self) -> str:
+        for agent in self.list_routable():
+            if agent.mode == "basic":
+                return agent.name
+        return "basic"
+
+    def get_manager_agent_name(self) -> str:
+        for agent in self.list_routable():
+            if self._role_kind(agent) == "manager" or agent.mode == "coordinator":
+                return agent.name
+        return "coordinator"
+
+    def get_data_analyst_agent_name(self) -> str:
+        for agent in self.list_routable():
+            tools = set(agent.allowed_tools)
+            if {"load_dataset", "execute_code"}.issubset(tools):
+                return agent.name
+        return "data_analyst"
+
+    def get_rag_agent_name(self) -> str:
+        for agent in self.list_routable():
+            if agent.mode == "rag" or self._expected_output(agent) == "rag_contract":
+                return agent.name
+        return "rag_worker"

@@ -1,7 +1,6 @@
 # Tools and Tool Calling
 
-The live runtime now uses tool calling through `src/agentic_chatbot_next`, not through
-the legacy `src/agentic_chatbot/runtime` package.
+The live runtime uses tool calling through `src/agentic_chatbot_next`.
 
 ## Runtime tool model
 
@@ -26,6 +25,14 @@ Each tool definition carries:
 The registry binds those definitions to the current session/job context and produces
 LangChain-compatible tools for agent execution.
 
+Today this surface is intentionally narrower than large coding-agent runtimes:
+
+- tools are Python-defined in-repo
+- skills are retrieved prompt context
+- agents are markdown-defined roles
+
+The live next runtime does not yet expose a broader plugin or MCP-loaded tool plane.
+
 ## Top-level runtime tool groups
 
 ### Utility cluster
@@ -48,7 +55,8 @@ for human inspection.
 - `rag_agent_tool`
 
 This is how the default `general` agent reaches grounded document reasoning without
-receiving the entire internal RAG specialist tool surface directly.
+receiving the entire internal RAG specialist tool surface directly. The tool fronts the
+next-runtime `run_rag_contract()` flow and returns the stable JSON RAG contract.
 
 ### Data-analyst cluster
 
@@ -116,11 +124,23 @@ kernel handles planning, task batching, finalization, and optional verification 
 ### `rag_worker`
 
 No top-level tool exposure. It delegates to the next-runtime RAG contract flow, which uses
-the internal specialist retrieval/synthesis layer.
+a direct Python retrieval/grading/synthesis pipeline.
 
-## Internal RAG specialist tools
+### `memory_maintainer`
 
-Inside the RAG engine, the tool layer includes operations such as:
+- registry-declared memory tools only
+
+Current implementation note: the dedicated `memory_maintainer` mode bypasses ReAct/tool
+calling today and runs direct heuristic extraction in
+`QueryLoop._run_memory_maintainer(...)`.
+
+## Additional RAG helper modules
+
+The repo also contains helper tool factories under
+`src/agentic_chatbot_next/rag/specialist_tools.py` and
+`src/agentic_chatbot_next/rag/extended_tools.py`.
+
+Those modules expose operations such as:
 
 - document resolution
 - search across docs or collections
@@ -129,10 +149,10 @@ Inside the RAG engine, the tool layer includes operations such as:
 - chunk window fetches
 - collection listing
 - scratchpad helpers
-- optional skill lookup helpers
+- optional web-search helpers
 
-These tools matter for RAG behavior, but they are not identical to the top-level tool pool
-seen by the `general` runtime agent.
+They are available in the repository, but the live `run_rag_contract()`,
+`rag_worker`, and `rag_agent_tool` paths do not currently assemble or invoke them.
 
 ## Fallback behavior
 
@@ -145,7 +165,6 @@ This keeps agent behavior functional even when native tool binding is unavailabl
 
 ## Safety and metadata
 
-The runtime uses tool-definition metadata primarily for:
 The runtime uses tool metadata primarily for:
 
 - shaping the visible tool surface
@@ -153,8 +172,20 @@ The runtime uses tool metadata primarily for:
 - grouping tools by capability
 - documenting orchestration permissions through agent config
 
-The repo does not yet implement a full human approval layer, but the tool metadata now
-exists in one place instead of being scattered across agent code.
+The current central policy layer is `ToolPolicyService`, which enforces:
+
+- allowed-tool membership per agent
+- workspace requirements
+- background-job safety
+- read-only restrictions for non-effectful modes
+- memory-only access for the memory maintainer
+
+For `memory_maintainer`, that policy is mostly defensive today because the live
+`memory_maintainer` mode does not execute a ReAct tool loop.
+
+The repo does not yet implement a full human approval layer, which is acceptable for the
+current bounded tool surface but should be revisited before adding broader world-changing
+capabilities.
 
 ## Observability tie-in
 

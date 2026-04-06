@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentic_chatbot.tools.skills_search_tool import (
+from agentic_chatbot_next.tools.skills_search_tool import (
     _build_index,
     _parse_sections,
     _score_section,
@@ -35,10 +35,10 @@ def _make_tool_with_content(content_map: dict):
     settings = _mock_settings()
 
     with patch(
-        "agentic_chatbot.tools.skills_search_tool._build_index"
+        "agentic_chatbot_next.tools.skills_search_tool._build_index"
     ) as mock_build:
         # Build real index from provided content strings
-        from agentic_chatbot.tools.skills_search_tool import _parse_sections
+        from agentic_chatbot_next.tools.skills_search_tool import _parse_sections
 
         sections = []
         for key, content in content_map.items():
@@ -160,7 +160,7 @@ class TestParseSections:
 
 class TestScoreSection:
     def _make_section(self, heading: str, content: str, agent_key: str = "test"):
-        from agentic_chatbot.tools.skills_search_tool import _Section
+        from agentic_chatbot_next.tools.skills_search_tool import _Section
         sec = _Section(agent_key=agent_key, heading=heading, content=content)
         sec.tokens = _tokenise(heading + " " + content)
         return sec
@@ -223,7 +223,7 @@ Handle missing values before groupby operations.
 class TestMakeSkillsSearchTool:
     def _build_tool(self):
         settings = _mock_settings()
-        from agentic_chatbot.tools.skills_search_tool import _parse_sections, _Section
+        from agentic_chatbot_next.tools.skills_search_tool import _parse_sections, _Section
 
         # Build real sections from in-memory content
         sections = []
@@ -231,7 +231,7 @@ class TestMakeSkillsSearchTool:
         sections.extend(_parse_sections("data_analyst_agent", CONTENT_DA))
 
         with patch(
-            "agentic_chatbot.tools.skills_search_tool._build_index",
+            "agentic_chatbot_next.tools.skills_search_tool._build_index",
             return_value=sections,
         ):
             tool = make_skills_search_tool(settings)

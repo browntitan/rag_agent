@@ -17,8 +17,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from agentic_chatbot.config import load_settings
-from agentic_chatbot.providers import build_providers
+from agentic_chatbot_next.config import load_settings
+from agentic_chatbot_next.providers import build_providers
 from agentic_chatbot_next.app.service import RuntimeService
 
 

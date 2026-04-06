@@ -53,13 +53,5 @@ class SkillRuntime:
             logger.warning("Skill resolution failed for %s: %s", agent.name, exc)
             return ""
 
-    def build_prompt(
-        self,
-        agent: AgentDefinition,
-        *,
-        skill_context: str = "",
-    ) -> str:
-        prompt = self.prompt_builder.load_prompt(agent.prompt_file).strip()
-        if skill_context:
-            prompt = f"{prompt}\n\n## Skill Context\n{skill_context}".strip()
-        return prompt
+    def build_prompt(self, agent: AgentDefinition) -> str:
+        return self.prompt_builder.load_prompt(agent.prompt_file).strip()

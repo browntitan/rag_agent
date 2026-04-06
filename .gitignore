@@ -47,6 +47,12 @@ logs/
 
 # Runtime artifacts
 data/runtime/
+data/workspaces/
+data/memory/
+data/uploads/
+data/cache/
+frontend/node_modules/
+frontend/*.tsbuildinfo
 new_demo_notebook/.artifacts/*
 !new_demo_notebook/.artifacts/.gitkeep
 .ipynb_checkpoints/
